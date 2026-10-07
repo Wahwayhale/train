@@ -1,0 +1,429 @@
+/* ============================================================================
+ * ui.css — 界面样式（人性化重构版）
+ *
+ * 设计目标：
+ *   · 不挡画面 —— 行车界面全部深色玻璃、可自动淡出（hud-dim）、可一键专注（hud-zen），
+ *     对位俯视图只在进站时出现，默认把视野还给司机。
+ *   · 精致 —— 统一 8px 间距刻度、500/600/700 字重层级、数字 tabular-nums、
+ *     单一强调色（--line 线路色全局联动）、可感知的 hover/active/focus 反馈。
+ *   · 人性化 —— 触控目标 ≥44px、键盘 focus 可见、信息按"开车要看什么"分层：
+ *     速度/级位/车门是一等公民，其余收进二级。
+ *
+ * 契约（game.js 依赖，改动需同步）：所有 #id、data-act、data-line/mode/legs/hour/
+ *   svc/q/repo，以及 .is-on/.is-rm/.screen.is-active 这套类名。
+ * ==========================================================================*/
+
+:root{
+  --safe-t:env(safe-area-inset-top,0px); --safe-b:env(safe-area-inset-bottom,0px);
+  /* 色板：冷调深炭 + 单一强调色（线路色） */
+  --bg:#070c11;
+  --panel:#0c1319;
+  --panel-2:rgba(11,17,23,.86);
+  --panel-3:#111a21;
+  --border:rgba(178,208,224,.14);
+  --border-2:rgba(178,208,224,.22);
+  --ink:#e9f2f7;
+  --ink-2:#a9bdc9;
+  --ink-3:#6f8593;
+  --line:#8CC63E;                 /* 由 JS 按所选线路注入 */
+  --ok:#3ddc97; --warn:#f2b84b; --danger:#ff5d5d;
+  --r-lg:16px; --r-md:12px; --r-sm:9px;
+  --shadow:0 16px 44px rgba(0,0,0,.46);
+  --ease:cubic-bezier(.22,.9,.28,1);
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);
+  font-family:var(--font);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  -webkit-tap-highlight-color:transparent;touch-action:manipulation;overscroll-behavior:none}
+button,input{font:inherit}button{color:inherit;border:0;cursor:pointer;background:none}
+::selection{background:rgba(140,198,62,.32)}
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--line);outline-offset:2px;border-radius:6px}
+
+#app,#gl{position:fixed;inset:0;width:100%;height:100%}
+#gl{z-index:0;background:var(--bg)}
+.screen{position:fixed;z-index:3;inset:0;display:none;pointer-events:none}
+.screen.is-active{display:flex;pointer-events:auto}
+
+/* ---------- 通用 ---------- */
+.glass{background:linear-gradient(160deg,rgba(16,25,32,.96),rgba(10,17,23,.90));
+  border:1px solid var(--border);box-shadow:var(--shadow),inset 0 1px rgba(255,255,255,.05);
+  backdrop-filter:blur(14px) saturate(1.1);-webkit-backdrop-filter:blur(14px) saturate(1.1)}
+.glass-soft{background:var(--panel-2);border:1px solid var(--border);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+
+.btn{min-height:48px;padding:11px 18px;border-radius:var(--r-md);background:rgba(148,178,196,.12);
+  border:1px solid var(--border-2);display:flex;align-items:center;justify-content:center;gap:3px;
+  flex-direction:column;font-weight:600;color:var(--ink);
+  transition:transform .14s var(--ease),background .16s ease,border-color .16s ease,box-shadow .16s ease}
+.btn:hover{background:rgba(160,190,208,.19);border-color:rgba(190,218,232,.32)}
+.btn:active{transform:scale(.972)}
+.btn.primary{background:var(--line);color:#06120a;border-color:rgba(255,255,255,.28);
+  box-shadow:0 10px 26px rgba(0,0,0,.34),0 0 0 1px rgba(0,0,0,.05)}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn strong{font-size:15px;letter-spacing:.01em}.btn small{font-size:10.5px;opacity:.74;font-weight:500}
+.btn.wide{width:100%}
+.icon-btn{width:44px;height:44px;border-radius:var(--r-md);background:rgba(148,178,196,.12);
+  border:1px solid var(--border);font-size:22px;line-height:1;display:grid;place-items:center;
+  transition:background .16s ease,transform .14s var(--ease)}
+.icon-btn:hover{background:rgba(160,190,208,.2)}
+.icon-btn:active{transform:scale(.94)}
+.icon-btn.small{width:38px;height:38px;font-size:19px}
+.spacer{flex:1}
+.eyebrow{font-size:10.5px;letter-spacing:.26em;color:var(--ink-3);font-weight:700;text-transform:uppercase}
+
+/* 细滚动条（选线页那条原生灰条是最碍眼的东西之一） */
+.scroll-pane{overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:rgba(150,180,196,.4) transparent}
+.scroll-pane::-webkit-scrollbar{width:8px}
+.scroll-pane::-webkit-scrollbar-thumb{background:rgba(150,180,196,.34);border-radius:8px;border:2px solid transparent;background-clip:content-box}
+.scroll-pane::-webkit-scrollbar-thumb:hover{background:rgba(170,200,216,.55);background-clip:content-box}
+.scroll-pane::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- 首页 ---------- */
+#screen-home{align-items:center;justify-content:flex-end;padding:clamp(16px,4vw,44px);
+  padding-top:calc(var(--safe-t) + 20px);padding-bottom:calc(var(--safe-b) + 24px);
+  background:linear-gradient(100deg,rgba(3,8,12,0) 30%,rgba(3,8,12,.42) 72%,rgba(3,8,12,.62))}
+.home-card{width:min(560px,100%);padding:clamp(24px,4.5vw,40px);border-radius:22px;position:relative;overflow:hidden}
+.home-card:before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--line)}
+.home-card:after{content:"";position:absolute;top:-70px;right:-70px;width:220px;height:220px;border-radius:50%;
+  background:radial-gradient(circle,rgba(140,198,62,.14),transparent 70%);pointer-events:none}
+.home-card h1{font-size:clamp(34px,7vw,58px);line-height:.96;margin:16px 0 12px;letter-spacing:-.03em;font-weight:800}
+.home-card h1 span{display:block;color:var(--line);font-size:.64em;margin-top:10px;font-weight:700;letter-spacing:0}
+.lead{margin:0;color:var(--ink-2);font-size:14.5px;line-height:1.75;max-width:44ch}
+.home-specs{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:26px 0 24px}
+.home-specs span{border-top:1px solid var(--border-2);padding-top:10px;color:var(--ink-3);font-size:10.5px;font-weight:500}
+.home-specs b{display:block;color:var(--ink);font-size:17px;font-weight:700;margin-bottom:3px;font-variant-numeric:tabular-nums}
+.home-specs small{font-size:9.5px;color:var(--ink-3)}
+.home-actions{display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:10px}
+.home-actions .primary{grid-row:span 2;min-height:106px}
+.home-note{font-size:10.5px;color:var(--ink-3);line-height:1.7;margin-top:20px;max-width:52ch}
+.build-stamp{display:block;margin-top:6px;font-size:9px;color:var(--ink-3);opacity:.75;font-variant-numeric:tabular-nums}
+
+/* ---------- 选线 ---------- */
+#screen-select{flex-direction:column;background:linear-gradient(100deg,rgba(4,9,13,.93),rgba(4,9,13,.86))}
+.topbar{margin:calc(var(--safe-t) + 12px) 14px 0;border-radius:var(--r-lg);padding:10px 14px;display:flex;align-items:center;gap:12px}
+.topbar b{display:block;font-size:15px;font-weight:700}
+.topbar small{display:block;color:var(--ink-3);font-size:10.5px;margin-top:2px}
+.select-pane{width:min(820px,calc(100% - 28px));margin:12px auto 96px;padding:6px 4px}
+.field{padding:18px 2px 22px;border-bottom:1px solid rgba(190,216,230,.09)}
+.field:last-of-type{border-bottom:0}
+.field-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;gap:12px}
+.field-head b,.field-label{font-size:13px;color:var(--ink);font-weight:700}
+/* 设置里"两个旋钮"那句解释：小、灰、不抢按钮的视觉重量 */
+.hint-line{font-size:10.5px;color:var(--ink-3);line-height:1.6;margin:6px 0 2px}
+.field-head span{font-size:10.5px;color:var(--ink-3);text-align:right;line-height:1.5}
+
+.line-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(102px,1fr));gap:8px}
+.line-card{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:12px 10px 13px;text-align:left;min-height:74px;position:relative;overflow:hidden;
+  transition:transform .14s var(--ease),background .16s ease,border-color .16s ease}
+.line-card:hover{background:rgba(22,34,43,.85);transform:translateY(-1px)}
+.line-card:after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--c)}
+.line-card.is-on{border-color:var(--c);background:rgba(20,32,40,.92);box-shadow:0 0 0 1px var(--c),0 6px 18px rgba(0,0,0,.3)}
+.line-card b{font-size:14.5px;display:block;font-weight:700}
+.line-card small{font-size:9.5px;color:var(--ink-3);display:block;margin-top:5px;line-height:1.5}
+
+.mode-list{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.mode-card{padding:14px;border-radius:var(--r-md);background:var(--panel-2);border:1px solid var(--border);
+  text-align:left;min-height:92px;transition:transform .14s var(--ease),background .16s ease,border-color .16s ease}
+.mode-card:hover{background:rgba(22,34,43,.85);transform:translateY(-1px)}
+.mode-card.is-on{border-color:var(--line);background:rgba(20,34,26,.6);box-shadow:0 0 0 1px var(--line)}
+.mode-card b{font-size:13px;font-weight:700}
+.mode-card p{font-size:10px;line-height:1.6;color:var(--ink-3);margin:6px 0 0}
+
+.two-col{display:grid;grid-template-columns:1.15fr .85fr;gap:20px}
+.picker{margin-top:10px;display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;
+  background:var(--panel-3);border:1px solid var(--border);padding:10px;border-radius:var(--r-md)}
+.picker>div{text-align:center;min-width:0}
+.picker b{display:block;font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.picker small{display:block;color:var(--ink-3);font-size:9.5px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.seg{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap}
+.seg button{flex:1;min-width:0;min-height:44px;border-radius:var(--r-sm);background:var(--panel-3);
+  border:1px solid var(--border);font-size:12px;font-weight:600;color:var(--ink-2);
+  transition:background .16s ease,color .16s ease,border-color .16s ease,transform .14s var(--ease)}
+.seg button:hover{background:rgba(22,34,43,.9);color:var(--ink)}
+.seg button:active{transform:scale(.97)}
+.seg button.is-on{background:var(--line);color:#06120a;border-color:transparent;font-weight:700}
+.train-card{display:flex;gap:14px;align-items:center;border-radius:var(--r-lg);padding:14px!important;margin-top:10px}
+.train-swatch{width:92px;height:44px;border-radius:22px 22px 10px 10px;flex:0 0 auto;
+  background:linear-gradient(180deg,#18262e 0 34%,#cfd5d8 34% 74%,var(--line) 74% 84%,#5b656b 84%);
+  box-shadow:inset 0 -5px rgba(0,0,0,.2),0 4px 12px rgba(0,0,0,.3)}
+.train-card b{font-size:13px;font-weight:700}
+.train-card p{margin:4px 0 0;color:var(--ink-3);font-size:10.5px;line-height:1.55}
+.bottom-safe{position:fixed;z-index:6;left:0;right:0;bottom:0;padding:12px 14px calc(var(--safe-b) + 12px);
+  background:linear-gradient(transparent,rgba(3,8,12,.96) 40%)}
+.bottom-safe .btn{max-width:720px;margin:auto}
+
+/* ============================================================================
+ * 驾驶界面 —— 核心诉求：不挡画面
+ * 顶部一条深色行车信息带（非过去那条刺眼的亮白 LED），底部一层紧凑控制台，
+ * 闲置自动淡出（hud-dim），一键专注（hud-zen）只留速度/级位/车门。
+ * ==========================================================================*/
+#screen-game{display:none}
+#screen-game.is-active{display:block}
+
+/* 过渡统一放这里，dim/zen 切换才平滑 */
+#screen-game .hud-top,#screen-game .cockpit,#screen-game .topview,#screen-game .announce{
+  transition:opacity .38s ease,transform .38s var(--ease)}
+
+/* ---- 顶部行车信息带 ---- */
+.hud-top{position:absolute;z-index:7;top:calc(var(--safe-t) + 10px);left:14px;right:14px;
+  border-radius:var(--r-lg);padding:8px 12px 9px;
+  background:linear-gradient(160deg,#0d151c,#090f14);
+  border:1px solid var(--border);box-shadow:0 10px 30px rgba(0,0,0,.4);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.hud-top-row{display:flex;align-items:center;gap:12px;min-height:34px}
+.hud-pause{flex:0 0 auto;width:32px;height:32px;border-radius:var(--r-sm);background:rgba(150,180,196,.12);
+  border:1px solid var(--border);font-size:14px;color:var(--ink);display:grid;place-items:center;
+  transition:background .15s ease,transform .13s var(--ease)}
+.hud-pause:hover{background:rgba(170,200,216,.22)}
+.hud-pause:active{transform:scale(.92)}
+.hud-line{flex:0 0 auto;height:26px;min-width:44px;padding:0 10px;border-radius:7px;display:grid;place-items:center;
+  background:var(--line);color:#06120a;font-weight:800;font-size:12.5px;letter-spacing:.01em}
+.hud-mode:empty{display:none}
+.hud-mode{flex:0 0 auto;height:26px;padding:0 9px;border-radius:7px;display:grid;place-items:center;
+  font-weight:700;font-size:11px;letter-spacing:.03em;color:#06231a;background:var(--ok)}
+.hud-mode.is-rm{background:var(--warn);color:#241300}
+.hud-next{display:flex;flex-direction:column;line-height:1.15;min-width:0}
+.hud-next small{font-size:9px;color:var(--ink-3);font-weight:700;letter-spacing:.08em}
+.hud-next b{font-size:18px;font-weight:800;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hud-door{margin-left:auto;display:flex;align-items:center;gap:7px;flex:0 0 auto}
+.hud-door b{font-size:12px;font-weight:700;color:var(--ink-2);white-space:nowrap}
+/* 钟点：与天光/站台屏同源。等宽数字，免得分钟跳变时整条信息带在抖。 */
+.hud-clock{flex:0 0 auto;font-variant-numeric:tabular-nums;font-size:14px;font-weight:800;
+  color:var(--ink-2);letter-spacing:.05em}
+/* 地勤仪表：实时 fps + 构建号。画面异常时先看它——fps 稳而画面闪 = 显示链路层
+   （驱动/双显卡/浏览器硬件加速），fps 崩 = 性能问题。 */
+.hud-perf{flex:0 0 auto;font-size:8.5px;color:var(--ink-3);font-weight:600;
+  font-variant-numeric:tabular-nums;letter-spacing:.02em;opacity:.75;white-space:nowrap}
+.zen-toggle{flex:0 0 auto;height:32px;padding:0 12px;border-radius:var(--r-sm);background:rgba(150,180,196,.12);
+  border:1px solid var(--border);font-size:11px;font-weight:700;color:var(--ink-2);letter-spacing:.05em;
+  transition:background .15s ease,color .15s ease,border-color .15s ease}
+.zen-toggle:hover{background:rgba(170,200,216,.2);color:var(--ink)}
+#screen-game.hud-zen .zen-toggle{background:var(--line);color:#06120a;border-color:transparent}
+.door-ico{width:17px;height:21px;border:2.5px solid #5db9d6;border-radius:3px;position:relative;flex:0 0 auto;
+  background:linear-gradient(90deg,#2b8aa8 46%,transparent 46% 54%,#2b8aa8 54%)}
+.door-ico:after{content:"";position:absolute;left:50%;top:50%;width:9px;height:9px;border:2.5px solid #ff6b6b;border-radius:50%;transform:translate(-50%,-50%)}
+
+/* 线路图：过去是浅色大块，现在收成深色细条 */
+.hud-route{margin-top:7px;height:34px;position:relative;overflow:hidden}
+.hud-route svg{position:absolute;inset:0;width:100%;height:100%}
+.hud-labels,.led-labels{position:absolute;inset:0;pointer-events:none}
+.lr-label{position:absolute;top:0;transform:translateX(-50%);font-size:10px;font-weight:600;color:var(--ink-2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:80px;line-height:1.1}
+.lr-label.lower{top:auto;bottom:0}
+.lr-label.passed{color:var(--ink-3)}
+.lr-label.current{color:var(--line);font-size:11px;font-weight:800}
+.lr-back{stroke:#3a4c57;stroke-width:5}
+.lr-done{stroke:var(--ok);stroke-width:5}
+.lr-node{fill:#1a2830;stroke:#55707e;stroke-width:2}
+.lr-node.passed{fill:#2f5a45;stroke:#3f7a55}
+.lr-node.current{fill:var(--warn);stroke:var(--line)}
+
+/* ---- 报站浮签：信息顶部带已有，这里收成小胶囊、不再是一大块 ---- */
+.announce{position:absolute;z-index:5;left:50%;transform:translateX(-50%);top:calc(var(--safe-t) + 116px);
+  border-radius:999px;padding:5px 14px;text-align:center;display:flex;align-items:baseline;gap:8px;
+  background:rgba(8,14,19,.6);border:1px solid var(--border);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.announce b{font-size:12px;font-weight:700}
+.announce span{font-size:9.5px;color:var(--ink-3)}
+
+/* ---- 对位俯视图：默认隐藏，进站/停准判定才滑进来（updateHUD 切 .is-live） ---- */
+.topview{position:absolute;z-index:6;top:calc(var(--safe-t) + 128px);right:14px;width:250px;
+  border-radius:var(--r-lg);padding:10px;background:var(--panel);border:1px solid var(--border);
+  box-shadow:var(--shadow);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  opacity:0;transform:translateX(14px);pointer-events:none}
+.topview.is-live{opacity:1;transform:translateX(0);pointer-events:auto}
+.topview-head{display:flex;justify-content:space-between;align-items:baseline;font-size:10.5px;color:var(--ink-3);margin-bottom:7px;font-weight:600}
+.tv-dist{font-weight:800;color:var(--line);font-variant-numeric:tabular-nums;font-size:15px}
+.tv-bar{position:relative;height:40px;border-radius:var(--r-sm);background:linear-gradient(180deg,#0a1017,#0e1620);
+  border:1px solid rgba(190,216,230,.12);overflow:hidden}
+.tv-zone{position:absolute;left:50%;top:0;bottom:0;width:9%;transform:translateX(-50%);
+  background:rgba(61,220,151,.2);border-left:1px solid rgba(61,220,151,.6);border-right:1px solid rgba(61,220,151,.6)}
+.tv-head{position:absolute;left:50%;top:50%;width:0;height:0;transform:translate(-50%,-50%);
+  border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:11px solid var(--line);
+  filter:drop-shadow(0 0 4px rgba(255,255,255,.5))}
+.tv-pred{position:absolute;top:4px;bottom:4px;width:2px;background:var(--warn);left:50%;opacity:.85}
+.topview-legend{display:flex;align-items:center;gap:7px;font-size:9px;color:var(--ink-3);margin-top:7px;flex-wrap:wrap}
+.topview-legend span{opacity:.85;width:100%}
+.lg{width:9px;height:9px;border-radius:2px;display:inline-block}
+.lg.green{background:var(--ok)}.lg.head{background:var(--line)}.lg.pred{background:var(--warn)}
+
+.approach-marker{position:absolute;z-index:4;top:38%;left:50%;transform:translate(-50%,-50%);display:none;
+  text-align:center;text-shadow:0 2px 8px #000;pointer-events:none}
+.approach-marker.is-on{display:block}
+.approach-marker b{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums}
+.approach-marker span{display:block;font-size:9.5px;color:var(--warn);font-weight:700;letter-spacing:.1em}
+
+/* ---- 驾驶室 2D 轮廓（保留契约） ---- */
+.cab-overlay{display:none;position:fixed;z-index:2;inset:0;pointer-events:none}
+.cab-overlay.is-on{display:block}
+.cab-pillar,.cab-roof,.cab-desk{position:absolute;background:linear-gradient(90deg,#0d141a,#222a30,#0d141a);box-shadow:0 0 26px rgba(0,0,0,.6)}
+.cab-pillar{top:0;bottom:23%;width:clamp(14px,3vw,34px)}
+.cab-pillar.l{left:0;transform:skewX(-2deg)}.cab-pillar.r{right:0;transform:skewX(2deg)}
+.cab-roof{top:0;left:0;right:0;height:clamp(18px,4.5vh,44px)}
+.cab-desk{left:0;right:0;bottom:0;height:23%;clip-path:polygon(0 14%,18% 5%,82% 5%,100% 14%,100% 100%,0 100%)}
+
+/* ---- 底部控制台：比过去矮一截、更透亮 ---- */
+/* 底部控制台：一条紧凑的右下角组合（手柄 + 动作键），不再通宽。
+   速度/级位/缸压/距停车标/车门/ATO 都在 TCMS 屏与机械圆表上 ——
+   底部不再放仪表卡（第 111 条：HUD 只留 TCMS 没有的量）。 */
+.cockpit{position:absolute;z-index:7;right:12px;bottom:calc(var(--safe-b) + 12px);
+  display:flex;gap:9px;align-items:flex-end}
+
+/* ---- 小条目行车数据（TCMS 上没有的量）：一条一个小胶囊，收在顶带内部 ---- */
+.hud-chips{display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:flex-end;
+  margin-top:6px;transition:opacity .38s ease}
+.chip{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:7px;
+  background:rgba(5,11,16,.62);border:1px solid rgba(190,216,230,.14);
+  font-size:9.5px;font-weight:600;color:var(--ink-3);letter-spacing:.02em;
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);white-space:nowrap}
+.chip b{font-size:11px;font-weight:800;color:var(--ink);font-variant-numeric:tabular-nums}
+.chip .chip-k{font-style:italic;font-weight:700;color:var(--ink-3)}
+.chip .load-bar{width:30px;margin:0 0 0 2px}
+button.chip{cursor:pointer;transition:background .15s ease,border-color .15s ease}
+button.chip:hover{background:rgba(22,56,70,.85);border-color:rgba(120,220,255,.45)}
+
+/* 主控手柄（紧凑版：轨道 + 微调钮 + 级位角标，触屏用；键盘 ↑↓ 同效） */
+.lever-mini{display:flex;flex-direction:column;align-items:center;gap:4px;
+  padding:7px 8px 6px;border-radius:var(--r-md);background:rgba(9,15,20,.78);
+  border:1px solid var(--border);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.lever-state{font-size:11px;color:var(--warn);font-weight:800;font-variant-numeric:tabular-nums}
+.handle-wrap{height:88px;display:flex;justify-content:center}
+.lever-track{position:relative;width:44px;height:100%;border-radius:15px;touch-action:none;
+  background:linear-gradient(180deg,rgba(46,126,84,.30),rgba(92,101,111,.14) 27% 36%,rgba(120,66,56,.30));
+  border:1px solid var(--border)}
+.lever-zone{position:absolute;left:13px;top:7px;bottom:7px;width:18px;border-radius:9px;background:rgba(0,0,0,.5);box-shadow:inset 0 0 9px #000}
+.lever-knob{position:absolute;z-index:3;left:4px;width:36px;height:20px;border-radius:7px;
+  background:linear-gradient(#dde6ea,#7d8b92);box-shadow:0 3px 9px #000;transform:translateY(-50%);
+  transition:top .09s cubic-bezier(.3,1.4,.5,1)}
+.lever-knob i{position:absolute;inset:4px 8px;border-radius:3px;background:#212930}
+.lever-ticks{position:absolute;inset:0;pointer-events:none}
+.lever-tick{position:absolute;left:50px;transform:translateY(-50%);font-size:8.5px;color:var(--ink-3);white-space:nowrap;font-weight:600}
+.lever-tick.pwr{color:#6fd39a}.lever-tick.brk{color:#e08d78}
+.lever-tick.is-on{color:#fff;font-weight:800;font-size:10px}
+.handle-nudge{display:grid;grid-template-columns:1fr 1fr;gap:5px;width:100%}
+.handle-nudge button{height:24px;border-radius:var(--r-sm);background:rgba(150,180,196,.12);border:1px solid var(--border);
+  font-size:12px;transition:background .14s ease,transform .12s var(--ease)}
+.handle-nudge button:hover{background:rgba(170,200,216,.22)}
+.handle-nudge button:active{transform:scale(.94)}
+
+/* 仪表卡已拆（第 111 条）：速度表/指标格/力矩条全部随卡片删除，
+   数据的去向见 index.html 的 hud-chips 与 TCMS 屏。
+   load-bar 基础规则保留 —— chips 里的满载条还在用它。 */
+.load-bar{display:block;height:4px;border-radius:3px;background:#26333a;margin-top:4px;overflow:hidden}
+.load-bar s{display:block;height:100%;width:0;background:var(--ok);border-radius:3px;transition:width .2s ease}
+
+/* 动作键（紧凑版）：六键小格 + 退行/前进（仅停站开门时出现）。
+   键盘全有等价键（O/C/D/E/R/H），触屏才需要这组按钮。 */
+.action-mini{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;
+  padding:7px;border-radius:var(--r-md);background:rgba(9,15,20,.78);
+  border:1px solid var(--border);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.action-mini>button{min-width:56px;height:34px;border-radius:var(--r-sm);background:rgba(150,180,196,.12);
+  border:1px solid var(--border);font-size:10.5px;font-weight:700;
+  transition:background .14s ease,transform .12s var(--ease),border-color .14s ease}
+.action-mini>button:hover{background:rgba(170,200,216,.2)}
+.action-mini>button:active{transform:scale(.96)}
+.action-mini .accent{background:rgba(22,60,72,.72);border-color:var(--line)}
+.action-mini .accent:hover{background:rgba(28,74,88,.85)}
+.action-mini .danger{background:rgba(140,36,38,.4);border-color:rgba(255,93,93,.4)}
+.action-mini .danger:hover{background:rgba(165,44,46,.55)}
+.reposition{display:none;grid-column:1/4;grid-template-columns:1fr 1fr;gap:5px}
+.reposition.is-on{display:grid}
+.reposition button{height:26px;border-radius:var(--r-sm);background:rgba(219,169,71,.14);border:1px solid rgba(233,191,106,.28);font-size:9px;font-weight:600}
+
+/* ---- toast / hint ---- */
+.toast{position:absolute;z-index:12;left:50%;bottom:calc(var(--safe-b) + 250px);transform:translate(-50%,15px);
+  opacity:0;pointer-events:none;background:rgba(4,10,14,.94);border:1px solid var(--border-2);border-radius:var(--r-md);
+  padding:9px 16px;font-size:12px;font-weight:600;transition:.22s var(--ease);max-width:82vw;text-align:center}
+.toast.is-on{opacity:1;transform:translate(-50%,0)}
+.hint{position:absolute;z-index:5;left:50%;top:32%;transform:translate(-50%,-50%);padding:12px 18px;border-radius:var(--r-md);
+  background:rgba(4,10,14,.82);border:1px solid var(--border);font-size:12.5px;text-align:center;opacity:0;
+  transition:.22s var(--ease);pointer-events:none;line-height:1.6}
+.hint.is-on{opacity:1}
+.hint small{font-size:10px;color:var(--ink-2)}
+
+/* ---- 闲置自动淡出：开车不看屏时把视野还回来（UI.bind 挂指针/键盘监听切 .hud-dim） ---- */
+#screen-game.hud-dim .cockpit{opacity:.12}
+#screen-game.hud-dim .hud-top{opacity:.4}
+#screen-game.hud-dim .hud-chips{opacity:.25}
+#screen-game.hud-dim .announce,#screen-game.hud-dim .topview{opacity:0}
+#screen-game.hud-dim .cockpit:hover,#screen-game.hud-dim .hud-top:hover,#screen-game.hud-dim .hud-chips:hover{opacity:1}
+
+/* ---- 专注模式：控制台与数据条目全部收走（UI 切 .hud-zen）——
+   速度/级位在 TCMS 屏上，车门与线路信息在顶带上，专注模式只留路与天。 ---- */
+#screen-game.hud-zen .announce,#screen-game.hud-zen .topview,#screen-game.hud-zen .hud-route{display:none}
+#screen-game.hud-zen .cockpit,#screen-game.hud-zen .hud-chips{display:none}
+
+/* ---------- 结算 ---------- */
+#screen-result{align-items:center;justify-content:center;padding:calc(var(--safe-t) + 16px) 14px calc(var(--safe-b) + 16px);background:rgba(3,9,13,.55)}
+.result-card{width:min(660px,100%);max-height:100%;overflow:auto;border-radius:22px;padding:26px}
+.score{font-size:76px;font-weight:800;line-height:.9;margin-top:14px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.grade{font-size:26px;font-weight:800;color:var(--line);margin-top:6px}
+.result-card>p{color:var(--ink-2);font-size:11.5px;line-height:1.6}
+.result-list{display:grid;gap:4px;margin:20px 0}
+.result-row{display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:center;border-top:1px solid rgba(190,216,230,.09);padding:9px 0}
+.result-row b{font-size:11.5px;font-weight:700}
+.result-row span{font-size:10px;color:var(--ink-3)}
+.result-row em{font-style:normal;font-size:13px;font-weight:800}
+.result-actions{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+
+/* ---------- 弹层 ---------- */
+.modal{display:none;position:fixed;z-index:30;inset:0;background:rgba(2,6,9,.6);align-items:center;justify-content:center;
+  padding:calc(var(--safe-t) + 14px) 14px calc(var(--safe-b) + 14px);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+.modal.is-on{display:flex}
+.modal-card{width:min(500px,100%);border-radius:20px;padding:24px}
+.modal-card.tall{max-height:92vh;overflow:auto}
+.modal-card h2{font-size:19px;margin:0 0 10px;font-weight:800;letter-spacing:-.01em}
+.modal-card>p{font-size:11.5px;color:var(--ink-2);line-height:1.6}
+.modal-card>.btn{margin-top:10px}
+.doc{font-size:11.5px;color:var(--ink-2);line-height:1.8}
+.doc h3{color:var(--ink);font-size:12.5px;margin:18px 0 4px;font-weight:700}
+.doc p{margin:0}
+.doc b{color:#d5e8f1;font-weight:700}
+.key-help{margin-top:16px;padding:13px;border-radius:var(--r-md);background:rgba(120,200,240,.07);border:1px solid rgba(120,200,240,.16);font-size:10.5px;line-height:2}
+.key-help b{color:#eaf6fb;font-weight:700}
+.switch-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 0;border-bottom:1px solid rgba(190,216,230,.09);cursor:pointer}
+.switch-row span{font-size:12px}
+.switch-row b{display:block;font-weight:600}
+.switch-row small{display:block;color:var(--ink-3);font-size:9px;margin-top:3px}
+.switch-row input{display:none}
+.switch-row>i{width:44px;height:24px;border-radius:15px;background:#27363e;position:relative;transition:.2s;flex:0 0 auto;border:1px solid var(--border)}
+.switch-row>i:after{content:"";position:absolute;width:17px;height:17px;border-radius:50%;top:2.5px;left:3px;background:#d6e3e8;transition:.2s var(--ease)}
+.switch-row input:checked+i{background:var(--line);border-color:transparent}
+.switch-row input:checked+i:after{left:23px;background:#06120a}
+.slider-row{display:grid;grid-template-columns:100px 1fr;gap:12px;align-items:center;padding:12px 0;font-size:11px}
+.slider-row input{width:100%;accent-color:var(--line)}
+.slider-row b{font-variant-numeric:tabular-nums}
+
+/* ---------- 响应式 ---------- */
+@media (max-width:760px){
+  .home-actions{grid-template-columns:1fr 1fr}
+  .home-actions .primary{grid-column:1/3;grid-row:auto;min-height:64px}
+  .mode-list{grid-template-columns:1fr}
+  .two-col{grid-template-columns:1fr}
+  .home-specs{grid-template-columns:repeat(2,1fr)}
+  .select-pane{margin-bottom:110px}
+  .hud-next b{font-size:15px}
+  .hud-door b{display:none}
+  .hud-clock{font-size:12px}
+  .cockpit{right:8px;left:8px;bottom:calc(var(--safe-b) + 8px);justify-content:flex-end}
+  .handle-wrap{height:76px}
+  .lever-tick{display:none}   /* 窄屏上级位刻字会压进画面；当前级位看 B3 角标即可 */
+  .action-mini>button{min-width:0;height:32px}
+  .hud-chips .chip:nth-child(4){display:none}  /* 窄屏收掉候乘（站台屏上本来就有） */
+  .topview{width:206px;top:calc(var(--safe-t) + 120px)}
+  .toast{bottom:calc(var(--safe-b) + 230px)}
+  .result-actions{grid-template-columns:1fr 1fr}
+}
+@media (max-height:620px) and (orientation:landscape){
+  .hud-route{height:26px}
+  .topview{top:calc(var(--safe-t) + 116px);width:214px}
+  .cockpit{bottom:calc(var(--safe-b) + 8px)}
+  .handle-wrap{height:64px}
+  .action-mini>button{height:30px}
+  .hud-chips .chip:nth-child(4){display:none}
+  .toast{bottom:170px}
+  .announce{top:calc(var(--safe-t) + 100px)}
+}

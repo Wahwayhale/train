@@ -1,0 +1,9 @@
+shots/
+server.log
+*.negctl-bak
+*.negtmp.js
+*.pre-handoff-*
+.quarantine/
+node_modules/
+.DS_Store
+Thumbs.db

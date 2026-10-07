@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="format-detection" content="telephone=no" />
+<title>上海地铁驾驶模拟器</title>
+<link rel="stylesheet" href="./css/ui.css" />
+</head>
+<body>
+<div id="app">
+  <canvas id="gl" aria-label="上海地铁三维驾驶场景"></canvas>
+  <div class="cab-overlay" id="cab-overlay"><i class="cab-pillar l"></i><i class="cab-pillar r"></i><i class="cab-roof"></i><i class="cab-desk"></i></div>
+
+  <!-- ================= 首页 ================= -->
+  <section class="screen is-active" id="screen-home">
+    <div class="home-card glass">
+      <div class="eyebrow">SHANGHAI METRO · DRIVER SIM</div>
+      <h1>上海地铁<span>驾驶模拟器</span></h1>
+      <p class="lead">真实线形 · 曲线超高 · 空气制动延迟 · 门对门精确停车</p>
+      <div class="home-specs">
+        <span><b id="spec-lines">—</b>条线路</span>
+        <span><b>曲线</b>真实线形</span>
+        <span><b>±0.3<small>m</small></b>ATO 指标</span>
+        <span><b>离线</b>WebGL</span>
+      </div>
+      <div class="home-actions">
+        <button class="btn primary" data-act="go-select"><strong>开始驾驶</strong><small>进入司机台</small></button>
+        <button class="btn" data-act="help">操作说明</button>
+        <button class="btn" data-act="settings">模拟器设置</button>
+      </div>
+      <div class="home-note">车站顺序与站名逐字对照《上海轨道交通网络示意图》D202512 版；车辆尺寸与加制动性能按 01A07 型式试验值标定；磁浮为长定子直线电机（无接触网），其余线路架空接触网供电。<span class="build-stamp">构建 2026-10-07 21:20（BVE 模型贴图口径修正：贴图是灰度细节图、颜色在 SetColor 里，着色器加"模式 3 真乘"；1 号线列车仍为模型本体）</span></div>
+    </div>
+  </section>
+
+  <!-- ================= 选线 ================= -->
+  <section class="screen" id="screen-select">
+    <header class="topbar glass"><button class="icon-btn" data-act="back-home">‹</button><div><b>运行设置</b><small>选择线路、模式与起始站</small></div><span class="spacer"></span></header>
+    <div class="scroll-pane select-pane">
+      <div class="field"><div class="field-head"><b>线路</b><span id="vehicle-meta">—</span></div><div id="line-list" class="line-list"></div></div>
+      <div class="field" id="svc-field" style="display:none"><div class="field-head"><b>交路</b><span>支线有自己的终点站屏与报站</span></div><div class="seg" id="svc-list"></div></div>
+      <div class="field"><div class="field-head"><b>驾驶模式</b><span>ATP 默认关闭：超速只警告不干预</span></div><div id="mode-list" class="mode-list"></div></div>
+      <div class="field two-col">
+        <div><div class="field-label">起始站</div><div class="picker"><button class="icon-btn small" data-act="sta-prev">‹</button><div><b id="sta-name">—</b><small id="sta-en">—</small></div><button class="icon-btn small" data-act="sta-next">›</button></div></div>
+        <div><div class="field-label">连续驾驶</div><div class="seg" id="leg-seg"><button data-legs="1">1 站</button><button class="is-on" data-legs="3">3 站</button><button data-legs="5">5 站</button><button data-legs="99">全程</button></div></div>
+      </div>
+      <div class="field" id="hour-field"><div class="field-head"><b>时段</b><span id="hour-desc">客流与 AI 车载同源：夜里空、早高峰挤</span></div><div class="seg" id="hour-seg"><button data-hour="2">夜间</button><button data-hour="7">早高峰</button><button class="is-on" data-hour="13">平峰</button><button data-hour="18">晚高峰</button></div></div>
+      <div class="field train-card glass-soft"><div class="train-swatch" id="train-swatch"></div><div><b id="train-title">—</b><p id="train-desc">—</p></div></div>
+    </div>
+    <div class="bottom-safe"><button class="btn primary wide" data-act="begin"><strong>进入驾驶室</strong><small>从当前站发车</small></button></div>
+  </section>
+
+  <!-- ================= 驾驶 ================= -->
+  <section class="screen" id="screen-game">
+    <header class="hud-top" id="led-board">
+      <div class="hud-top-row">
+        <button class="hud-pause" data-act="pause" aria-label="暂停">Ⅱ</button>
+        <span class="hud-line" id="led-line">2号线</span>
+        <span class="hud-mode" id="led-mode"></span>
+        <span class="hud-next"><small id="led-next-label">下一站 NEXT</small><b id="led-next-station">—</b></span>
+        <span class="hud-door"><i class="door-ico"></i><b id="led-door-text">本侧开门</b></span>
+        <span class="hud-clock" id="led-clock">--:--</span>
+        <span class="hud-perf" id="hud-perf" title="实时帧率与构建号——画面异常时先看这里"></span>
+        <button class="zen-toggle" data-act="hud-zen" aria-label="专注模式：只留速度与车门">专注</button>
+      </div>
+    <!-- 小条目行车数据：只放**司机中控屏（TCMS）上没有的**量 ——
+         速度/级位/缸压/距停车标/车门/ATO 工况都在 TCMS 与两只机械圆表上，
+         HUD 不再重复；剩下的一条一个小胶囊，收在顶带内部（主行与走向条之间），
+         不再绝对定位压走向条。 -->
+      <div class="hud-chips" id="hud-chips">
+        <span class="chip">限速 <b id="hud-limit">70</b></span>
+        <span class="chip"><i class="chip-k">a</i> <b id="hud-accel">0.00</b></span>
+        <span class="chip">满载 <b id="hud-load">0</b>%<i class="load-bar"><s id="hud-load-fill"></s></i></span>
+        <span class="chip">候乘 <b id="hud-wait">—</b></span>
+        <span class="chip" id="hud-follow">—</span>
+        <span class="chip">ATP <b id="hud-atp">监控</b></span>
+        <button class="chip view-cycle" data-act="view"><b id="view-name">驾驶室</b></button>
+      </div>
+      <div class="hud-route" id="led-route"></div>
+    </header>
+
+    <div class="announce" id="announce"><b id="next-station">—</b><span id="next-en"></span></div>
+
+    <aside class="topview" id="topview">
+      <div class="topview-head"><span>对位俯视图</span><span class="tv-dist" id="tv-dist">—</span></div>
+      <div class="tv-bar"><i class="tv-zone"></i><i class="tv-head" id="tv-head"></i><i class="tv-pred" id="tv-pred"></i></div>
+      <div class="topview-legend"><i class="lg green"></i>停车区<i class="lg head"></i>车头<i class="lg pred"></i>预计停车<span>误差 ≤0.5 m 为达标</span></div>
+    </aside>
+
+    <div class="approach-marker" id="approach-marker"><b id="marker-distance">—</b><span>停车标</span></div>
+
+    <!-- 底部控制台：不再是三张通宽大卡片 —— 一条紧凑的右下角组合，
+         手柄保留给触屏（键盘 ↑↓ 同效），动作键全部小尺寸；
+         它占的高度从 212 px 收到约 100 px，左下整片视野还给司机。 -->
+    <div class="cockpit">
+      <div class="lever-mini">
+        <div class="handle-wrap"><div id="lever-track" class="lever-track"><div class="lever-zone"></div><div id="lever-knob" class="lever-knob"><i></i></div><div id="lever-ticks" class="lever-ticks"></div></div></div>
+        <div class="handle-nudge"><button data-act="notch-up">▲</button><button data-act="notch-down">▼</button></div>
+        <span class="lever-state" id="handle-state">B3</span>
+      </div>
+      <div class="action-mini">
+        <button data-act="open-door"><b>开门</b></button>
+        <button data-act="close-door"><b>关门</b></button>
+        <button class="accent" data-act="depart"><b>发车</b></button>
+        <button class="danger" data-act="emergency"><b>EB</b></button>
+        <button data-act="release-eb"><b>缓解</b></button>
+        <button data-act="horn"><b>鸣笛</b></button>
+        <div class="reposition" id="reposition"><button data-repo="back">退行</button><button data-repo="fwd">前进</button></div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+    <div class="hint" id="hint"></div>
+  </section>
+
+  <!-- ================= 结算 ================= -->
+  <section class="screen" id="screen-result">
+    <div class="result-card glass">
+      <div class="eyebrow">RUN COMPLETE</div>
+      <div class="score" id="res-score">0</div><div class="grade" id="res-grade">—</div><p id="res-sub">—</p>
+      <div id="res-list" class="result-list"></div>
+      <div class="result-actions">
+        <button class="btn" data-act="save-card">保存成绩卡</button>
+        <button class="btn" data-act="share">分享</button>
+        <button class="btn" data-act="back-select">换线路</button>
+        <button class="btn primary" data-act="again">再跑一次</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 弹层 ================= -->
+  <div class="modal" id="modal-pause"><div class="modal-card glass"><h2>运行暂停</h2><p>制动与计时已冻结。</p>
+    <button class="btn primary wide" data-act="resume">继续驾驶</button><button class="btn wide" data-act="settings">设置</button><button class="btn wide" data-act="quit">退出本次运行</button></div></div>
+
+  <div class="modal" id="modal-help"><div class="modal-card glass tall"><h2>司机操作说明</h2><div class="doc">
+    <h3>这条线和南京版有什么不同</h3><p>线路是<b>真的会弯</b>的：直线—圆曲线交替，站台一律设在直线上，曲线按平衡速度设超高，所以过弯时列车和司机的视线都会侧倾。曲线还有自己的限速。</p>
+    <h3>限速与超速</h3><p>全线运营限速 <b>70 km/h</b>（进站 40）。<b>ATP 默认关闭</b>：超出限速只会给出警告，系统不介入牵引与制动，所以你可以一直拉到车辆的构造速度——代价是制动距离不够时停车标就在前面，冲过头要自己对位。想找回兜底，在设置里打开「ATP 超速防护」，超速会先常用制动、再紧急制动。</p>
+    <h3>主控手柄</h3><p>上方 P1–P4 为牵引，中位 N 为惰行，下方 B1–B7 为常用制动，FR 为快速制动，EB 为紧急制动。制动力不是瞬间建立的——<b>空气制动缓解要三秒以上</b>，编组越长越慢，所以必须提前给制动、进站逐级缓解。</p>
+    <h3>为什么会空转</h3><p>牵引力受黏着限制：黏着系数随速度衰减，低速满牵引时如果超过可用人牵引力，动轮会空转并掉力。</p>
+    <h3>雨天</h3><p>在设置里把天气切到「雨」：湿轨把黏着系数从 0.28 压到 0.19——同一档位牵引变弱、<b>制动距离变长</b>、大牵引易空转。天光转阴、湿地面反射、雨声与司机室雨刮同时生效；客流也会小幅上升（雨天地铁客流上升是真实规律）。</p>
+    <h3>停车与车门</h3><p>停车标对应车头位置。ATO 的设计指标是 ±0.3 m，人工能停进 ±0.25 m 就是 SSS。<b>过站了就过站了</b>：错位再大也照样给开门，系统不拦你，代价只算在停车分里（它占总评 55%）。冲过停车标 11 m 以上判对位失败。</p>
+    <h3>线上还有其他车</h3><p>每条线按高峰行车间隔铺了一整队 AI 列车（1 号线 26 列 / 2 分钟一班）。它们用的是<b>和你同一套物理与同一套 ATO</b>，所以会正常进站、开门、关门前进，也会在前方被占用时<b>把你扣在站外</b>。HUD 上的「追踪列车」就是前方/后方最近一列的距离；自动/半自动模式下，前方占用会真的变成你的停车目标，手动模式只报距离不代劳。</p>
+    <h3>终点入库</h3><p>跑到<b>线路两端的终点站</b>时不会立刻结算——出站端头有一处停车基地（出入段线、4 条停车线、车挡、入库信号机）。把车停进库前的停车标即结束本次运行并出结算，结算里单列一行「入库 · 对位偏差」。库内限速 25 km/h。中途终到（没跑到端头）没有基地可入，直接结算。</p>
+    <h3>界面不挡画面</h3><p>行车中几秒钟不操作，HUD 会自动淡出，动一下鼠标或键盘就唤回；顶部信息带右侧的「专注」按钮把控制台收成一条——只留速度、主控手柄与车门按钮，想看完整仪表再点一次即可。对位俯视图只在进站 700 m 内或停站对位时出现。</p>
+    <h3>三种模式</h3><p>人工驾驶全部手动；半自动由 ATO 跑区间，距停车标 60 m 交回人工完成停车；全自动完成牵引、巡航、停车与开关门，你仍可随时用紧急制动接管。</p>
+    <h3>UTO 全自动运行线路</h3><p>上海把地铁的无人驾驶统一叫 <b>UTO</b>（无人值守的全自动运行），本模拟器沿用这个口径：具备 UTO 能力的是 <b>10、14、15、18 号线和浦江线</b>。这些线的司机室没有隔间墙，第一视角直接从前观景窗看向隧道；线上跑的车按全自动行车，不需要人上车。</p><p>功能标准也落进了机制里：在 UTO 线上选<b>人工驾驶</b>，就是现实中的 <b>RM 限制人工模式</b>——车载不再给你自动运行曲线，速度顶到 <b>25 km/h</b>，走字屏挂「RM 限制人工」；选半自动或全自动才按正常 70 km/h 跑。有司机的线路不受这条限制。</p>
+    <h3>声音</h3><p>逆变器谐波、轮轨、风噪、制动摩擦、轮缘尖叫、钢轨接头全由 WebAudio 实时合成，其中接头声按<b>里程</b>触发而不是按时间。站名播报走系统语音，所以任何站都念得出来；不喜欢可以在设置里关掉，字幕始终显示。</p>
+    <div class="key-help"><h3>键盘 / 鼠标（电脑端）</h3>
+      <b>↑ / ↓</b> 升降级位 &nbsp; <b>D</b> 发车确认 &nbsp; <b>O / C</b> 开 / 关门<br>
+      <b>E</b> 紧急制动 &nbsp; <b>R</b> 缓解 EB &nbsp; <b>H / 回车</b> 鸣笛 &nbsp; <b>V</b> 切视角 &nbsp; <b>空格 / Esc</b> 暂停<br>
+      在三维画面上按住拖动可环视驾驶室；<b>← / →</b> 转头 &nbsp; <b>PgUp / PgDn</b> 俯仰 &nbsp; <b>Home</b> 视线回中。</div>
+  </div><button class="btn primary wide" data-act="close-modal">知道了</button></div></div>
+
+  <div class="modal" id="modal-settings"><div class="modal-card glass"><h2>模拟器设置</h2>
+    <label class="switch-row"><span><b>行车音效</b><small>牵引、轮轨、制动、风噪</small></span><input id="set-sound" type="checkbox" checked><i></i></label>
+    <label class="switch-row"><span><b>站名播报</b><small>使用系统语音合成</small></span><input id="set-voice" type="checkbox" checked><i></i></label>
+    <label class="switch-row"><span><b>ATP 超速防护</b><small>关闭后超速不再自动制动，冲过停车标由自己负责</small></span><input id="set-atp" type="checkbox"><i></i></label>
+    <div class="slider-row"><span>音量 <b id="vol-num">70</b></span><input id="set-volume" type="range" min="0" max="100" value="70"></div>
+    <div class="field-label">画质 · 特效</div>
+    <div class="seg" id="quality-seg"><button data-q="low">省</button><button data-q="medium">中</button><button class="is-on" data-q="high">全（高清）</button></div>
+    <div class="field-label">输出分辨率上限 · 性能</div>
+    <div class="seg" id="res-seg"><button data-r="q720">720p</button><button class="is-on" data-r="q1080">1080p</button><button data-r="q2600">2.5K</button><button data-r="native">原生</button></div>
+    <div class="field-label">自适应分辨率</div>
+    <div class="seg" id="auto-seg"><button data-resauto="0">手动</button><button class="is-on" data-resauto="1">自动</button></div>
+    <div class="hint-line">两个旋钮互不影响：1080p 也是全套特效的高清画面，只是像素少一档、跑得更稳。自动档只在上面选的那一档锁不住时降一档，跑得动会自己爬回来 —— 生效的是哪一档写在 HUD 上。</div>
+    <div class="field-label">天气</div>
+    <div class="seg" id="weather-seg"><button class="is-on" data-w="clear">晴</button><button data-w="rain">雨</button></div>
+    <button class="btn primary wide" data-act="close-modal">完成</button>
+  </div></div>
+</div>
+
+<div id="fatal" style="display:none"></div>
+
+<script src="./src/core.js"></script>
+<script src="./src/mesh.js"></script>
+<script src="./src/renderer.js"></script>
+<script src="./src/textures.js"></script>
+<script src="./src/align.js"></script>
+<script src="./src/landmark.js"></script>
+<script src="./src/world.js"></script>
+<script src="./src/bve.js"></script>
+<script src="./src/train.js"></script>
+<script src="./src/physics.js"></script>
+<script src="./src/pax.js"></script>
+<script src="./src/traffic.js"></script>
+<script src="./src/street.js"></script>
+<script src="./src/audio.js"></script>
+<script src="./data/shanghai.js"></script>
+<script src="./src/game.js"></script>
+</body>
+</html>
