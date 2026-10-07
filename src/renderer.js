@@ -187,7 +187,16 @@ void main(){
   /* ---- 法线贴图：用屏幕空间导数现场构 TBN（不需要顶点切空间）----
      这是"没有预计算切线"时的标准做法：从世界位置与 UV 的导数里解出
      切向与副切向，再投影掉法向分量。代价是每个像素多两张贴图采样 +
-     几个导数，收益是**整片场景的浮雕感**。 */
+     几个导数，收益是**整片场景的浮雕感**。
+
+     ⚠ 2026-10-07 实测：Chrome 154 的 WebGL2 上下文里，ESSL 1.00 着色器根本用不了
+     dFdx/dFdy —— 写 pragma 启用 GL_OES_standard_derivatives 会答
+     "extension is not supported"，不写就是 "no matching overloaded function found"，
+     于是整条 SCENE_FS 编译失败、产品启动即 fatal 覆盖层。SwiftShader（无头截图那条路）
+     的翻译器宽松，所以这条只在真机 GPU 上暴露 —— 之前没人看见。
+     uNrm 今天恒 0（uniform 定位表里没有它），所以这道 #ifdef 不改变任何一个像素；
+     A 轨道把着色器升到 ES 3.00 之后，这层守卫就该拿掉。 */
+#ifdef GL_OES_standard_derivatives
   if (uNrm > 0.0) {
     vec3 tN = texture2D(uTexN, uv).xyz * 2.0 - 1.0;
     vec3 dp1 = dFdx(vW), dp2 = dFdy(vW);
@@ -198,6 +207,7 @@ void main(){
     B = normalize(B - N * dot(N, B) - T * dot(T, B));
     N = normalize(mat3(T, B, N) * vec3(tN.xy * uNrm, tN.z));
   }
+#endif
   vec4 tx = vec4(1.0);
   if (uMat.x > 0.5) {
     vec2 wv = uv;
