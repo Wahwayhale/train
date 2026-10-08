@@ -2512,6 +2512,35 @@ if (process.env.NEG === 'limiter') SH.JERK = { up: 20, dn: 20, eb: 20 };`),
     disk: ['./src/game.js', 'PERF.frameStart();', 'void 0;'],
     patch: t => t,
   },
+  /* ---- A 轨 Phase B（2026-10-08）：test-nrm.js 的四条负控 ----
+     法线贴图这一族的缺陷全是"静默"的 —— SCENE_FS 的分支永远不执行时，
+     画面照画、既有几何套件一个像素都看不出来（体检结论第 1 条躺了十几年）。
+     四条对应接线面的四个部件：定位表 / TEXTURE1 绑定 / 缺省强度 / 生成清单。 */
+  {
+    name: 'nrmloc', why: 'uniform 定位表摘掉 texN/nrm（uNrm 又拿不到位置 —— 分支零像素参与）',
+    expect: ['uniform 定位表缺 texN/nrm'], script: './test-nrm.js',
+    disk: ['./src/renderer.js', "wet: L('uWet'), texN: L('uTexN'), nrm: L('uNrm') };", "wet: L('uWet') };"],
+    patch: t => t,
+  },
+  {
+    name: 'nrmbind', why: '_drawBatch 摘掉 TEXTURE1 的法线图绑定（uNrm 点亮但采样器是黑图）',
+    expect: ['TEXTURE1 一次都没绑到'], script: './test-nrm.js',
+    disk: ['./src/renderer.js', 'gl.bindTexture(gl.TEXTURE_2D, texN);', 'void 0;'],
+    patch: t => t,
+  },
+  {
+    name: 'nrmzero', why: '缺省强度不再查 NRM_STRENGTH（清单材质全部 nrm=0 —— 接线空转）',
+    expect: ['清单材质一个都没点亮'], script: './test-nrm.js',
+    disk: ['./src/renderer.js', 'const NS = SH.textures && SH.textures.NRM_STRENGTH;',
+      'const NS = null;'],
+    patch: t => t,
+  },
+  {
+    name: 'nrmgen', why: "buildAll 不再生成 <名>N（消费端在场但纹理注册表是空的）",
+    expect: ['<名>N 生成行不见了'], script: './test-nrm.js',
+    disk: ['./src/textures.js', "if (NRM_STRENGTH[n]) renderer.texFromCanvas(n + 'N', normalFromCanvas(c, NRM_STRENGTH[n]), true);", ''],
+    patch: t => t,
+  },
 ];
 
 /* 这个 harness 自己也要防"空跑"：第一版忘了把 `NEG` 传进子进程环境，

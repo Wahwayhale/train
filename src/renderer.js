@@ -219,7 +219,9 @@ void main(){
      "no matching overloaded function found"，整条 SCENE_FS 编译失败、产品启动即
      fatal 覆盖层，且只有真机 GPU 暴露（SwiftShader 翻译器宽松）。当时的补丁是把
      分支裹进 #ifdef；2026-10-08 随 ES 3.00 升级摘除 —— 3.00 里导数是核心能力。
-     uNrm 至今恒 0（uniform 定位表里没有它），这条分支依旧零像素参与。） */
+     uNrm/uTexN 的接线 2026-10-08 落地（视觉方案 1.1）：uniform 定位表的
+     texN/nrm + _drawBatch 的 TEXTURE1 绑定 —— 这条分支从"写了没人调用"变为
+     按材质生效，判据 test-nrm.js。） */
   if (uNrm > 0.0) {
     vec3 tN = texture(uTexN, uv).xyz * 2.0 - 1.0;
     vec3 dp1 = dFdx(vW), dp2 = dFdy(vW);
@@ -497,6 +499,9 @@ void main(){
 
 /* ------------------------------------------------------------------ 材质表 */
 /* mode: 0 不用贴图 / 1 贴图作为细节乘算 / 2 贴图作为反照率(带 alpha)
+ * nrm:  法线贴图强度覆写（视觉方案 1.1）—— 缺省取 textures.js 的 NRM_STRENGTH
+ *       （那里同时决定哪几张 <名>N 会被生成）；给 0 可单杀某材质的法线图，
+ *       只对 mode 1 且贴图在清单里的材质有意义。调手感用，不是新真值。
  * fade: [起, 止] 细节贴图向平均色退化的距离（米）——按"这张图上的结构有多大"给：
  *   窗格 1~2 m 的结构 300 m 外就该糊掉；航拍地面的 50 m 街区 3 km 外仍然读得出来。
  *   给错了不会报错，只会让远景变成纯色板（"城市浮在沙漠上"那次就是给错了）。 */
@@ -812,7 +817,7 @@ class Renderer {
       aI0: gl.getAttribLocation(this.prog, 'aI0'), aI1: gl.getAttribLocation(this.prog, 'aI1'), aI2: gl.getAttribLocation(this.prog, 'aI2'), aI3: gl.getAttribLocation(this.prog, 'aI3'),
       aIT: gl.getAttribLocation(this.prog, 'aIT'), inst: L('uInst'), tint: L('uTint'),
       M: L('uM'), VP: L('uVP'), N: L('uN'), eye: L('uEye'), sunDir: L('uSunDir'), sunCol: L('uSunCol'), sky: L('uSkyCol'), gnd: L('uGndCol'),
-      fog: L('uFogCol'), fog2: L('uFog2'), fogP: L('uFog'), fade: L('uFade'), tex: L('uTex'), mat: L('uMat'), time: L('uTime'), emi: L('uEmiBoost'), wave: L('uWave'), cut: L('uCut'), uvS: L('uUvScale'), skyH: L('uSkyHor'), wet: L('uWet') };
+      fog: L('uFogCol'), fog2: L('uFog2'), fogP: L('uFog'), fade: L('uFade'), tex: L('uTex'), mat: L('uMat'), time: L('uTime'), emi: L('uEmiBoost'), wave: L('uWave'), cut: L('uCut'), uvS: L('uUvScale'), skyH: L('uSkyHor'), wet: L('uWet'), texN: L('uTexN'), nrm: L('uNrm') };
 
     this.pgSky = program(gl, FS_QUAD_VS, SKY_FS, 'sky');
     this.pgBright = program(gl, FS_QUAD_VS, BRIGHT_FS, 'bright');
@@ -864,6 +869,10 @@ class Renderer {
     this.env = null;
     this._curM = null;
     this._curTex = null;
+    /* 法线贴图的脏追踪（视觉方案 1.1）：TEXTURE1 上一次绑的对象与上一次写的
+       uNrm 强度 —— 同图连续批次不重复绑定/不重复写 uniform。 */
+    this._curTexN = null;
+    this._curNrm = -1;
     this._curBlend = false;
     this._curBlendFunc = -1;
     this._curDepthMask = true;
@@ -1220,6 +1229,8 @@ class Renderer {
     gl.bindVertexArray(null);
     this._curM = null;
     this._curTex = null;
+    this._curTexN = null;      // 法线贴图脏追踪复位（end 的后期链会占用 TEXTURE1）
+    this._curNrm = -1;
     this._curBlend = false;
     this._curBlendFunc = -1;
     this._curDepthMask = true;
@@ -1265,6 +1276,11 @@ class Renderer {
     gl.uniform1f(this.u.wet, this.wetAmt);
     gl.uniform2fv(this.u.uvS, _UV_ONE);
     gl.activeTexture(gl.TEXTURE0); gl.uniform1i(this.u.tex, 0);
+    /* 法线贴图固定走 TEXTURE1（视觉方案 1.1）：采样器指向在程序生命周期内
+       不变，begin 一次写够；每帧的绑定由 _drawBatch 按材质脏追踪。
+       写完必须把活动单元切回 TEXTURE0 —— 后续 albedo 的脏绑定发生在 0 号。 */
+    gl.activeTexture(gl.TEXTURE1); gl.uniform1i(this.u.texN, 1);
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   _drawSky(cam, env) {
@@ -1359,6 +1375,33 @@ class Renderer {
     }
     if (texName && this.textures[texName]) mode = ov.mode != null ? ov.mode : m.mode;
     else mode = 0;
+    /* ---- 法线贴图：第二纹理单元（视觉方案 1.1，Phase B 第一刀）----
+       生效条件（一条不满足即 uNrm=0，着色器分支零像素参与）：
+       · 最终 mode 为 1（细节乘算）—— mode 2/3 的 BVE 实拍贴图没有配套法线图，
+         恒走 0 分支；
+       · 贴图名在 textures.js 的 NRM_STRENGTH 清单里（那里同时决定哪几张图
+         会被生成 —— 清单外根本没有 <名>N 可绑）；
+       · 材质表的 `nrm` 字段可逐条覆写强度（调手感用），缺省取清单值。
+       TEXTURE1 走独立脏追踪（_curTexN）：同图连续批次不重复绑定；绑定后必须
+       切回 TEXTURE0 —— 漫反射贴图的绑定永远发生在 0 号单元。纹理缺失
+       （如离线判据不跑 buildAll）时静默退 0，不许绑 null。
+       判据：test-nrm.js（行为：假 gl 逐批次记账 TEXTURE1 绑定与 uNrm 取值）。 */
+    let nrmK = 0;
+    if (mode === 1 && texName) {
+      const NS = SH.textures && SH.textures.NRM_STRENGTH;
+      const def = NS ? NS[texName] : null;
+      nrmK = m.nrm != null ? m.nrm : (def != null ? def : 0);
+    }
+    const texN = nrmK > 0 && texName && this.textures[texName + 'N'] ? this.textures[texName + 'N'] : null;
+    if (texN) {
+      if (texN !== this._curTexN) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, texN);
+        this._curTexN = texN;
+        gl.activeTexture(gl.TEXTURE0);
+      }
+      if (nrmK !== this._curNrm) { gl.uniform1f(u.nrm, nrmK); this._curNrm = nrmK; }
+    } else if (this._curNrm !== 0) { gl.uniform1f(u.nrm, 0); this._curNrm = 0; }
     gl.uniform4f(u.mat, mode, ov.spec != null ? ov.spec : m.spec, m.shin, ov.alpha != null ? ov.alpha : m.alpha);
     const fd = m.fade || DETAIL_FADE;
     gl.uniform2f(u.fade, fd[0], fd[1]);

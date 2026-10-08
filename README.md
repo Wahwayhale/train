@@ -1016,6 +1016,12 @@ node runall.js         # 一次跑完上面 18 个脚本，检查 rc **与红字
 - **负控** ×6（`perfalloc` 回退一处 begin 的 new / `perfloc` _drawSky 帧内查位置 / `perfempty` ov 退回 `{}` / `perfinst` 实例缓冲不再复用 / `perfenv` 拆 envAt 分桶 / `perfpair` 拆 frameStart）逐条实跑报红 ✓。
 - **诚实的边界**：以上量的是提交路径的**分配结构**，不是玩家机器上的 fps。真机的帧时改善幅度取决于该机的 GC 节奏与批次量，本环境（SwiftShader 无头 + 5 帧取证）测不出稳定 fps，也不谎测。玩家侧验证：桌面 Chrome 开 `?perf=1`，看 HUD 的 `cpu med/max` 里 max 是否贴向 med（波动收敛）—— 这是留给真机的验收位，不是已过的判据。
 
+**150. 法线贴图管线接通（视觉方案 1.1，Phase B 第一刀）："印了花纹的平板"从机制上结束。** 体检结论第 1 条（README 148 之前的欠账清单里最大单笔）：SCENE_FS 写着完整的屏幕导数 TBN 分支、textures.js 生成并上传了 12 张 `<名>N` 法线图 —— 但 uniform 定位表没有 uTexN/uNrm、_drawBatch 只绑 TEXTURE0，**分支恒不执行，所有表面按绝对平面算光照**。这一条把接线补上，分支从"写了没人调用"变为按材质生效：
+- **接线三件**（零新增 draw call，每片元多一次采样）：① 定位表补 `texN/nrm`；② `begin` 把 uTexN 采样器指向 TEXTURE1（一次写够，写完切回 TEXTURE0）；③ `_drawBatch` 按材质绑 TEXTURE1 —— 生效条件三合一：最终 mode 为 1（mode 2/3 的 BVE 实拍贴图没有配套法线图恒走 0）、贴图名在 `NRM_STRENGTH` 清单里、材质表 `nrm` 字段可逐条覆写强度（缺省取清单值，给 0 可单杀）。**脏追踪**（`_curTexN/_curNrm`）：同图连续批次不重复绑定、uNrm 相同值不重复写；绑定后切回 TEXTURE0 —— albedo 的绑定永远发生在 0 号单元。纹理缺失（离线判据不跑 buildAll）静默退 0，不绑 null。
+- **判据（第 22 套件 `test-nrm.js`）**：① 静态 —— 定位表/着色器分支/TEXTURE1 绑定与切回/脏追踪在场；② 行为（假 gl 记账，单元号按 GL 常量数值 33985 记）—— 清单材质（granite/tiles/concrete/segment/ballast/asphalt/brick/metal/rail/concreteD 十种实测）真的点亮 uNrm>0 且 TEXTURE1 绑到 `<名>N`；③ 清单外材质（paint/glass/bldgWin/sign/water/carShell）uNrm 恒 0 且 TEXTURE1 **一次都不脏绑**；④ 覆写优先（granite→9.9 量到 9.9；concrete→0 单杀且不绑）；⑤ 缺图静默退 0；⑥ `NRM_STRENGTH` 由 `SH.textures` 导出且 renderer 里不许出现第二份 —— **生成（buildAll）与消费（_drawBatch）必须读同一张表**。判据的记账只收世界 pass：end() 后半段 composite 合法占用 TEXTURE1（uBloom 采样器），那不是脏绑 —— 收账后再放行 end()。
+- **负控** ×4（`nrmloc` 摘定位表 / `nrmbind` 摘 TEXTURE1 绑定 / `nrmzero` 缺省强度不查清单 / `nrmgen` buildAll 不再生成 `<名>N`）逐条实跑报红 ✓。nrmgen 那条钉在"生成行必须在场"上 —— 判据自己预填注册表模拟 buildAll（否则离线判据测不到消费端），生成端被拆时 ⑤ 仍绿是**对的**（缺图退 0 正确），所以红字钉生成行本身。
+- **帧循环纪律不受影响**：`_drawBatch` 新增路径零分配、零 getUniformLocation（走构造期位置表），test-perf 全绿；node runall 22/22。`node runall.js` 注册 test-nrm 于 SUITE 末位。
+
 
 
 

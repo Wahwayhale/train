@@ -773,6 +773,9 @@ SH.FACADE_UV = FACADE_UV;
 SH.FACADE_M = FACADE_M;
 SH.FACADE_VARIANTS = FACADE_VARIANTS;
 SH.textures = { buildAll, SignAtlas, tileNoise, tileFbm, paint, cv, CN_FONT, facadeTile, FACADE_UV, FACADE_M, FACADE_VARIANTS, BUILDERS,
+  /* 法线贴图的强度清单（视觉方案 1.1 起 renderer 的 _drawBatch 读它当缺省强度，
+     buildAll 也按它决定生成哪些 <名>N —— 生成与消费必须是同一份表，不许两处各写）。 */
+  NRM_STRENGTH,
   signStationPlate, signWayfind, signLineBadge, signRouteMap, signAd, signWarn, signDestination, signTvm, signClock,
   /* 诊断口（判据用）：最后一次 paint 的逐像素函数与边长 */
   lastPaint: () => ({ fn: lastPaintFn, size: lastPaintSize }) };

@@ -44,6 +44,7 @@ const SUITE = [
   ['test-tex.js', '贴图质量'],
   ['test-gles.js', '着色器/后端'],
   ['test-perf.js', '帧循环零分配'],
+  ['test-nrm.js', '法线贴图接线'],
 ];
 const only = process.argv.slice(2);
 let bad = 0, t0 = Date.now();
