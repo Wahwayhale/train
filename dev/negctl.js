@@ -2569,6 +2569,15 @@ if (process.env.NEG === 'limiter') SH.JERK = { up: 20, dn: 20, eb: 20 };`),
       'return 0.34;'],
     patch: t => t,
   },
+  /* ---- A 轨 Phase B（2026-10-08）：1.4 桌面默认分辨率档提级 的负控 ---- */
+  {
+    /* 默认档退回恒 q1080 —— 提级被静默推翻，桌面新玩家仍然跑放大渲染。 */
+    name: 'resdflt', why: '开机默认档退回恒 q1080（桌面提级被推翻）',
+    expect: ['桌面默认档不是 native'], script: './test-env.js',
+    disk: ['./src/renderer.js', "SH.defaultResTier = function (isMobileLike) {\n  return isMobileLike ? 'q1080' : 'native';\n};",
+      "SH.defaultResTier = function (isMobileLike) {\n  return 'q1080';\n};"],
+    patch: t => t,
+  },
 ];
 
 /* 这个 harness 自己也要防"空跑"：第一版忘了把 `NEG` 传进子进程环境，

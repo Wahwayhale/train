@@ -702,5 +702,50 @@ console.log('\n—— G. 实例化通道（AI 车中段车：省的是 draw，�
   if (errs.length) { bad += errs.length; console.log('  ✗ ' + errs.join('\n  ✗ ')); }
   else console.log(`  ✓ 自适应分辨率：弱 GPU 降到底并停住、强 GPU 一次不动、144 Hz 的半拍不被误判掉帧、不越玩家上限、变轻后逐档爬回、同档上探间隔 ≥ ${D.retryS} s（换挡次数与重探都有界）；降档必须真的少画像素（窗口低于所有预算时一动不动、1.5 M 窗口一步降到第一档买得到的、3.72 M 窗口只许逐档下台阶）；接线门在位；分 pass 两本账与刷屏周期独立测量都在（⑮）`);
 }
-console.log(bad ? `\n✗ ${bad} 项判据未通过` : '\n✓ 时刻与环境全部判据通过（天光随时段、发车密度随时段、首末班收车、雨天、门区与车内分布、自适应分辨率）');
+
+/* ---- ⑯ 开机默认分辨率档（视觉方案 1.4 / Phase B）：桌面 native、移动 q1080 ----
+ * 为什么单独一档：q1080 起步的旧口径诞生于"内存显卡锁满刷屏"的取舍，而桌面
+ * Chrome 的 DPR 由 resize() 里 min(dpr,2) 钳着 —— native 档的"贵"是有上界的，
+ * 跑不动还有 DRS 兜底（它本来就是自动档的默认路径）。判据用**假 UA 白名单表**
+ * 驱动 `SH.isMobileLike`：离线没有真 navigator，表里每一行都是一类真实设备。 */
+console.log('\n—— ⑯ 开机默认分辨率档（桌面 native / 移动 q1080，DRS 兜底不动）——');
+{
+  const errs = [];
+  /* 单点存在性与方向 */
+  if (typeof SH.defaultResTier !== 'function') errs.push('SH.defaultResTier 不存在 —— 默认档没有单点');
+  else {
+    if (SH.defaultResTier(true) !== 'q1080') errs.push('移动端默认档不是 q1080 —— 提级把手机也拖进满预算');
+    if (SH.defaultResTier(false) !== 'native') errs.push('桌面默认档不是 native —— 提级没发生');
+  }
+  /* 假 UA 白名单表：每行 { ua, touch, want }，want = 期望判成移动（true）还是桌面 */
+  if (typeof SH.isMobileLike !== 'function') errs.push('SH.isMobileLike 不存在 —— 平台探测没有单点');
+  else {
+    const TABLE = [
+      { why: 'Windows 桌面 Chrome', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36', touch: 0, want: false },
+      { why: 'macOS 桌面 Safari', ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/17.4', touch: 0, want: false },
+      { why: 'Android 手机 Chrome', ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/126.0.0.0 Mobile Safari/537.36', touch: 5, want: true },
+      { why: 'iPhone Safari', ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1', touch: 5, want: true },
+      { why: 'iPad Safari（桌面 UA 但 iPad 出现）', ua: 'Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1', touch: 5, want: true },
+      { why: '触摸屏笔记本（触屏但桌面 UA）', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36', touch: 10, want: false },
+    ];
+    for (const r of TABLE) {
+      const got = SH.isMobileLike({ userAgent: r.ua, maxTouchPoints: r.touch });
+      if (got !== r.want) errs.push(`假 UA 表「${r.why}」判成 ${got ? '移动' : '桌面'}（期望 ${r.want ? '移动' : '桌面'}）—— 平台口径与真实设备族不符`);
+    }
+    /* navigator 缺失（离线判据工况）按桌面 */
+    if (SH.isMobileLike(null) !== false) errs.push('navigator 不可用时没有回落桌面（离线判据全走这条）');
+  }
+  /* 接线面：构造器与 game.js 存档缺省都必须读单点（两处各写一份就会"设置页
+     显示 native、实际跑 q1080"）。rs2 在 H 段的作用域里，这里自己读一份。 */
+  const rs2 = require('fs').readFileSync('src/renderer.js', 'utf8');
+  if (!/this\.resTier = SH\.defaultResTier\(SH\.isMobileLike\(\)\)/.test(rs2))
+    errs.push('构造器的默认档没有读 SH.defaultResTier —— 单点被绕过');
+  if (!/SH\.defaultResTier\(SH\.isMobileLike\(\)\)/.test(src.replace(/\/\*[\s\S]*?\*\//g, '')))
+    errs.push('game.js 的存档缺省档没有读 SH.defaultResTier —— 重启后回落 q1080');
+  if (!/setRes\(t\) \{ if \(SH\.RES_TIERS\[t\] == null\) t = SH\.defaultResTier/.test(rs2))
+    errs.push('setRes 的非法值兜底还写死 q1080 —— 移动端传错档会静默吃 native');
+  if (errs.length) { bad += errs.length; console.log('  ✗ ' + errs.join('\n  ✗ ')); }
+  else console.log('  ✓ 开机默认档：桌面 native / 移动 q1080（假 UA 表 6 行全对 · 触屏笔记本不误判 · 构造器/存档/兜底三处同读单点 · DRS 兜底不动）');
+}
+console.log(bad ? `\n✗ ${bad} 项判据未通过` : '\n✓ 时刻与环境全部判据通过（天光随时段、发车密度随时段、首末班收车、雨天、门区与车内分布、自适应分辨率、开机默认档）');
 process.exitCode = bad ? 1 : 0;

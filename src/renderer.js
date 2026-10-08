@@ -652,6 +652,23 @@ function extractFrustumPlanes(m) {
  *  这是"跑不跑得动"的旋钮，与 `quality`（特效链 = 观感旋钮）互不牵连。
  *  1080p 取 2.07 M：实测本机 2.38 M 像素即可锁死 144Hz，留 13 % 余量。 */
 SH.RES_TIERS = { native: 0, q2600: 2.6e6, q1080: 2.07e6, q720: 0.92e6 };
+/** 开机默认档（视觉方案 1.4 / Phase B）：桌面按 DPR 给满（native = 不封顶，
+ *  浏览器自己按 devicePixelRatio 钳到 2 —— resize() 里 min(dpr,2)）；
+ *  移动维持 q1080（像素预算封顶，DRS 兜底）。判"桌面/移动"只认**输入方式**
+ *  （触屏主指针 + 移动 UA 任一即移动），不猜屏幕尺寸 —— 平板插鼠标按桌面算。
+ *  单点：renderer 构造器的 resTier 与 game.js 的存档缺省都读这里，
+ *  两处各写一份就会"设置页显示 native、实际跑 q1080"。跑不动由 DRS 兜底
+ *  （它是自动档的默认路径），所以提级不等于"锁死满预算"。 */
+SH.defaultResTier = function (isMobileLike) {
+  return isMobileLike ? 'q1080' : 'native';
+};
+/** 平台探测（判据用假 UA 表驱动这里）：navigator 不可用（离线判据）按桌面。 */
+SH.isMobileLike = function (nav) {
+  const n = nav || (typeof navigator !== 'undefined' ? navigator : null);
+  if (!n) return false;
+  if (n.maxTouchPoints != null && n.maxTouchPoints > 0 && /Mobi|Android|iPhone|iPad/i.test(n.userAgent || '')) return true;
+  return /Mobi|Android|iPhone|iPad/i.test(n.userAgent || '');
+};
 
 /* ---- 自适应分辨率（DRS）：像素预算的"档位序 + 自动策略" ----
    为什么和 RES_TIERS 写在一起：`哪一档更贵`与`该降哪一档`是同一件事的两半，
@@ -846,11 +863,14 @@ class Renderer {
        "架构迁移像素不变"对拍 —— 帧内改它不会立刻重建，_ensureMsaa 在
        begin() 里按 w/samples 判断。 */
     this.msaa = 4;
-    this.resTier = 'q1080';     // 默认 1080p 预算：满刷屏优先，想要原生清晰度可在设置里拉
+    /* 开机默认档走单点（视觉方案 1.4）：桌面 native / 移动 q1080。
+       玩家存档里有自己的选择时会被 game.js 的 setRes 覆盖 —— 这里只是
+       "没有偏好时的出厂档"。 */
+    this.resTier = SH.defaultResTier(SH.isMobileLike());
     this.resAuto = true;        // 自动档（DRS）默认开：上限仍是玩家选的这一档，
                                 // 所以它只在"这台机器连上限都锁不住"时才会动手，
                                 // 锁得住时一次都不改（判据②按字面钉住这条）。
-    this._effTier = 'q1080';    // 真正生效的那一档（自动时由策略摆，手动时=上限）
+    this._effTier = this.resTier;    // 真正生效的那一档（自动时由策略摆，手动时=上限）
     this._up = 1;
     this.post = true;
     this.time = 0;
@@ -1083,7 +1103,7 @@ class Renderer {
   }
   /** 输出像素预算档位：只改分辨率，不碰特效链 */
   /* 玩家改上限 = 生效档也从这一档重新开始找（自动档只会往下让，不会偷偷更贵）。 */
-  setRes(t) { if (SH.RES_TIERS[t] == null) t = 'q1080'; this.resTier = t; this._effTier = t; this.resize(); }
+  setRes(t) { if (SH.RES_TIERS[t] == null) t = SH.defaultResTier(SH.isMobileLike()); this.resTier = t; this._effTier = t; this.resize(); }
   /** 自动档开关：关掉立刻回到玩家选的那一档（不许留下一个"偷偷在跑"的生效档）。 */
   setResAuto(on) {
     this.resAuto = !!on;

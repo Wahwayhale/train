@@ -1029,6 +1029,12 @@ node runall.js         # 一次跑完上面 18 个脚本，检查 rc **与红字
 - **负控** ×3（`shadowfix` _shadow 退回写死黄昏 / `shadowoff` 玩家路径整块不画 / `shadowa0` alpha 恒 0.34 不再随太阳与露天变）逐条实跑报红 ✓。node runall 22/22。
 - **工程坑（记一笔）**：判据用 eval 抠 game.js 的 `TrainView` 类体离线跑时，模块级符号（`SHADOW_M`/`m4basis`/`CAR_GAP`）在 eval 作用域里不可见 —— 接触影的贴地矩阵因此挂在 `SH.SHADOW_M`（train.js，影子几何的同一处）而不是 game.js 模块级；判据侧补挂矩阵工具与 CAR_GAP 全局。这与 test-env 抠 LineRuntime 是同一族约束，新代码跨文件引用时要按"eval 可见"的口径写。
 
+**152. 开机默认分辨率档提级（视觉方案 1.4）：桌面 native、移动 q1080，DRS 兜底不动。** q1080 起步的旧口径诞生于"内存显卡锁满刷屏"的取舍（RES_TIERS 注释里的实测），但桌面 Chrome 的 DPR 由 resize() 的 `min(dpr,2)` 钳着 —— native 档的"贵"有上界，跑不动还有 DRS 兜底（自动档本来就是默认路径）。之前桌面新玩家开箱即放大渲染，想要原生清晰度要去设置里手动拉。
+- **单点（SH.defaultResTier / SH.isMobileLike）**：默认档 = `defaultResTier(isMobileLike())`；平台探测只认**输入方式与 UA 的合取**（移动 UA 判移动；触屏 + 桌面 UA 不判 —— 触摸屏笔记本按桌面算）。三处接线同读单点：renderer 构造器的 `resTier`、game.js 存档缺省档、`setRes` 的非法值兜底 —— 两处各写一份就会"设置页显示 native、实际跑 q1080"。**玩家存档有自己的选择时永远压过默认档**；DRS 逻辑一行未动（既有 8 条负控原样全过）。
+- **判据**：test-env 新增 ⑯ 段 —— 单点方向（桌面 native/移动 q1080）+ **假 UA 白名单表 6 行**（Windows Chrome / macOS Safari / Android Pixel / iPhone / iPad / 触摸屏笔记本逐行断言，iPad 的"桌面 UA 但带 iPad"与触摸屏笔记本的"触屏但桌面 UA"是两个方向的误判陷阱）+ navigator 不可用回落桌面（离线判据工况）+ 三处接线的字面 lint。
+- **负控** `resdflt`（单点退回恒 q1080 → ⑯ 的"桌面默认档不是 native"报红）实跑报红 ✓。node runall 22/22。
+- **geohash 基线推进（顺手还账）**：`--diff pre-islandB3` 有 42 处不同，但**在 Phase A 提交（722515e）上 diff 同样 42 处** —— 那是 148/149 两轮没推进基线的欠账，不是 Phase B 引入的。用 stash 对拍证明 **Phase B 前后几何指纹逐材质完全一致**（烘焙几何零扰动 —— 1.3 只改了 cfg.sunDir 的缺省值与绘制路径，1.1/1.4 不碰几何），基线推进到 `pre-visB`（下一轮大改的对照点）。
+
 
 
 

@@ -1847,11 +1847,12 @@ class App {
     this.rain = !!this.settings.rain;
     /* 画质与输出分辨率：这两个值**以前只写不读** —— 选了"流畅"，重启又回到高清，
        设置等于一次性的。现在开机就应用。
-       默认一律"全特效 + 1080p 预算"，不按老存档的 quality 反推分辨率：那个字段
-       历史上从未生效过，所有玩家一直以来实际跑的都是高清+原生，"迁移保号"反而
-       会把刚拆开的两个旋钮重新焊回去。想要原生清晰度的，设置里点一下就有。 */
+       画质缺省一律 high；分辨率缺省走 `SH.defaultResTier`（视觉方案 1.4）：
+       桌面 native / 移动 q1080 —— 不按老存档的 quality 反推分辨率：那个字段
+       历史上从未生效过，"迁移保号"反而会把刚拆开的两个旋钮重新焊回去。 */
     const sq = ['low', 'medium', 'high'].indexOf(this.settings.quality) >= 0 ? this.settings.quality : 'high';
-    const sr = SH.RES_ORDER.indexOf(this.settings.res) >= 0 ? this.settings.res : 'q1080';
+    const sr = SH.RES_ORDER.indexOf(this.settings.res) >= 0 ? this.settings.res
+      : SH.defaultResTier(SH.isMobileLike());
     this.r.setQuality(sq); this.r.setRes(sr);
     /* 自动档：老存档没有这个字段 → 开（默认档可以讲道理：上限仍是玩家选的 sr，
        自动只会在"连 sr 都锁不住"时动手，锁得住时一次都不改）。 */
