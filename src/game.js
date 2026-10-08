@@ -5,11 +5,52 @@
 'use strict';
 /* 构建号：每次影响玩家可见行为的修改都要更新（index.html 首页 .build-stamp 同步）。
    玩家报"画面异常"时，这个角标第一眼确认他跑的是不是这份代码。 */
-const BUILD_STAMP = '21:20';
+const BUILD_STAMP = '23:59';
 const SH = global.SH;
 const { clamp: C, lerp, rgbOf, rng, hash32, m4basis, m4trs, m4mul, mat4, m3normalFromM4, smoothstep } = SH;
 const { Builder, Geo } = SH;
 const { cross, norm3 } = Geo;
+const IDENT_M = mat4();   // 149 条 perf/GC：帧循环里的单位阵从每帧 mat4() 提为模块级
+
+/* 三分量就地插值（149 条 perf/GC）：envFor 原来每帧 5 个 .map() 各产一个
+   新数组 —— 写进持久缓冲，零分配。 */
+const mix3 = (dst, a, b, t) => {
+  dst[0] = a[0] + (b[0] - a[0]) * t;
+  dst[1] = a[1] + (b[1] - a[1]) * t;
+  dst[2] = a[2] + (b[2] - a[2]) * t;
+  return dst;
+};
+
+/* ---- Perf：子系统帧耗时归因（149 条）------------------------------------
+   URL 加 ?perf=1 开启；HUD 地勤行追加最贵的几个子系统（0.5 s 窗口的
+   均值/最大 ms）。"cpu 延迟大 / 帧率波动"这类问题先量后动刀 —— 以后谁
+   再把大件塞进帧循环，打开这个开关一眼就能看见它叫什么。
+   关闭时 mark() 是一次属性读 + 早退，帧内 ~9 次调用的成本 < 0.01 ms
+   （判据 test-perf ⑦）。 */
+const PERF = SH.FRAME_PERF = {
+  on: false,
+  names: ['top', 'sim', 'crowd', 'screens', 'cam', 'begin', 'world', 'post'],
+  acc: null, max: null, n: 0, _p: '', _t: 0,
+};
+PERF.mark = function (name) {
+  if (!this.on) return;
+  const t = performance.now(), d = t - this._t;
+  if (this._p && this.acc) {
+    const i = this.names.indexOf(this._p);
+    if (i >= 0) { this.acc[i] += d; if (d > this.max[i]) this.max[i] = d; }
+  }
+  this._p = name; this._t = t;
+};
+PERF.frameStart = function () { if (!this.on) return; this.n++; this._p = 'top'; this._t = performance.now(); };
+PERF.close = function () { if (this.on && this._p) this.mark(''); };
+PERF.window = function () { this.acc = new Array(this.names.length).fill(0); this.max = new Array(this.names.length).fill(0); this.n = 0; };
+PERF.top = function (k) {
+  if (!this.acc) return '';
+  const r = [];
+  for (let i = 0; i < this.names.length; i++) if (this.acc[i] > 1e-4) r.push([this.names[i], this.acc[i] / Math.max(1, this.n), this.max[i]]);
+  r.sort((a, b) => b[1] - a[1]);
+  return r.slice(0, k || 3).map(x => x[0] + ' ' + x[1].toFixed(2) + '/' + x[2].toFixed(1) + 'ms').join(' · ');
+};
 
 const CAR_GAP = 0.35;
 /* 连续驾驶的"意图 → 实际段数"是 `SH.legsPlan`（core.js，纯函数、可被离线断言）。 */
@@ -1799,6 +1840,8 @@ class App {
     this.setLine(this.lineId, false);
     this.show('home');
     this.last = performance.now();
+    /* Perf 归因开关（149 条）：?perf=1 —— 子系统帧耗时进 HUD 地勤行。 */
+    if (typeof location !== 'undefined' && /[?&]perf=1\b/.test(location.search || '')) { PERF.on = true; PERF.window(); }
     requestAnimationFrame(t => this.frame(t));
   }
   /** 当前钟点（0..24，带小数）。天光、HUD 钟点、站台屏钟点都读它 ——
@@ -2536,13 +2579,29 @@ class App {
     const ns = this.line.nearStation(s);
     /* 天光取**当前钟点**（连续时钟），不再恒为黄昏。地下没有天光，仍走 tunnel。
        这一行是"时间是死的"的根治点：以前写死 `SH.ENVS.dusk`，`ENVS.dawn/day/night`
-       三个预设从来没被调用过，选"夜间"画面照旧是黄昏。 */
-    let T = SH.envAt(this.hourNow);
-    /* 雨天（D4）：天光整体漫射化——太阳压暗、天空向灰收、雨雾抬浓。
-       调制在 SH.envRainy 单点，测试与游戏同调。 */
-    if (this.rain) T = SH.envRainy(T);
+       三个预设从来没被调用过，选"夜间"画面照旧是黄昏。
+       （149 条 perf/GC：envAt+envRainy 一次产 ~30 个短命数组，原来每帧都算
+       —— 144fps 下每秒四千个，是 minor GC 周期性尖刺的来源之一。天光随
+       钟点的变化以分钟计，按 0.25 s 分桶缓存：桶键 = clock×4 + 雨天位，
+       桶内复用同一份插值结果。SH.envAt/envRainy 本身保持纯函数 —— 判据
+       test-env 直接调它们，走的不是这条路。） */
+    const kb = (Math.floor((this.clock || 0) * 4) << 1) | (this.rain ? 1 : 0);
+    if (!this._envT || this._envT.k !== kb) {
+      let T = SH.envAt(this.hourNow);
+      if (this.rain) T = SH.envRainy(T);
+      this._envT = { k: kb, T };
+    }
+    const T = this._envT.T;
     const base = el ? T : SH.ENVS.tunnel;
-    const e = Object.assign({}, base);
+    /* 返回对象同样复用（每帧 5 个 .map() + Object.assign + post 字面量 → 0 分配）。
+       唯二持有者是渲染器当帧读掉与 this.r.env（end() 读 post）—— 跨帧覆盖安全；
+       需要独立快照的调用方自己拷（目前没有）。 */
+    const e = this._env || (this._env = { post: {}, _b: { fogCol: [0, 0, 0], skyCol: [0, 0, 0], gndCol: [0, 0, 0], skyHor: [0, 0, 0] } });
+    const B = e._b;
+    // 直接引用基准字段（桶内稳定，不拷贝）
+    e.sunDir = base.sunDir; e.sunCol = base.sunCol; e.skyZenith = base.skyZenith;
+    e.fog2 = base.fog2; e.haze = base.haze; e.night = base.night;
+    e.fogHeightFalloff = base.fogHeightFalloff;
     // 雾密度按 open 连续插值：出洞口时远景不会突然被吞掉
     const fogT = C(open, 0, 1);
     /* 雾密度**保持标定值不动**：0.00042 是"高架段看得见陆家嘴"的取舍结果
@@ -2551,13 +2610,12 @@ class App {
        完全不乘，高架段全额 ×1.85，洞口过渡带平滑衔接。 */
     e.fogDensity = lerp(0.0112, 0.00042, Math.pow(fogT, 0.7))
       * (this.rain ? lerp(1.0, SH.RAIN.fogMul, fogT) : 1.0);
-    e.fogCol = base.fogCol.map((v, i) => lerp(SH.ENVS.tunnel.fogCol[i], T.fogCol[i], fogT));
-    e.skyCol = base.skyCol.map((v, i) => lerp(SH.ENVS.tunnel.skyCol[i], T.skyCol[i], fogT));
-    e.gndCol = base.gndCol.map((v, i) => lerp(SH.ENVS.tunnel.gndCol[i], T.gndCol[i], fogT));
+    e.fogCol = mix3(B.fogCol, SH.ENVS.tunnel.fogCol, T.fogCol, fogT);
+    e.skyCol = mix3(B.skyCol, SH.ENVS.tunnel.skyCol, T.skyCol, fogT);
+    e.gndCol = mix3(B.gndCol, SH.ENVS.tunnel.gndCol, T.gndCol, fogT);
     /* 地平线暖色也要跟着插值：着色器现在拿它做垂直立面的环境光
        （见 renderer.js 的 band 项），出洞口一半明一半暗地跳变会直接体现在楼色上。 */
-    e.skyHorizon = (base.skyHorizon || base.fogCol).map((v, i) =>
-      lerp(SH.ENVS.tunnel.skyHorizon[i], T.skyHorizon[i], fogT));
+    e.skyHorizon = mix3(B.skyHor, SH.ENVS.tunnel.skyHorizon, T.skyHorizon, fogT);
     /* 人工光的加算倍率：夜里灯光本来就该更"亮出来"（night 1.0 时 +0.55）——
        这是"晚上城市灯亮起来"在数值上的落点，也是夜里楼群不发灰的原因。 */
     e.emiBoost = lerp(1.9, T.emiBoost, fogT);
@@ -2571,8 +2629,10 @@ class App {
        渲染器拿它乘材质的 wet 标志——只有沥青/砖石/地面这些会被雨淋的表面变暗变亮。 */
     e.wet = this.rain ? fogT : 0;
     /* 雨天的人工光：灰天里灯"亮出来"更多（envRainy 已给 emiBoost ×1.18），
-       湿地面的反射也让 bloom 稍涨。 */
-    e.post = { bloom: lerp(0.95, 0.62 + 0.55 * T.night, fogT) + (this.rain ? 0.12 * fogT : 0), exposure: 1.04 - (this.rain ? 0.04 * fogT : 0), vignette: 0.36, grain: 0.028, aberr: 0.005 };
+       湿地面的反射也让 bloom 稍涨。（post 也写进持久对象。） */
+    e.post.bloom = lerp(0.95, 0.62 + 0.55 * T.night, fogT) + (this.rain ? 0.12 * fogT : 0);
+    e.post.exposure = 1.04 - (this.rain ? 0.04 * fogT : 0);
+    e.post.vignette = 0.36; e.post.grain = 0.028; e.post.aberr = 0.005;
     return e;
   }
 
@@ -2661,7 +2721,9 @@ class App {
             + (this.r.gpuPostMs > 0 ? '+后期 ' + this.r.gpuPostMs.toFixed(1) : '')
             + (this._drs && this._drs.cpu >= SH.DRS.lowS ? '·瓶颈不在分辨率' : '') : '')
           + ' · '
-          + (this.r.api || '?') + (this.r.msaa > 0 ? '·MSAA' + this.r.msaa : '') + ' · ' + BUILD_STAMP;
+          + (this.r.api || '?') + (this.r.msaa > 0 ? '·MSAA' + this.r.msaa : '')
+          + (PERF.on ? ' · perf ' + PERF.top(3) : '')
+          + ' · ' + BUILD_STAMP;
       }
       /* 自适应分辨率：就吃上面这两个中位，**不另起计时器**（HUD 与 DRS 必须看同一份
          帧历史，否则会出现"HUD 说 60fps 而 DRS 在降档"这种谁也说不清的场面）。
@@ -2686,8 +2748,10 @@ class App {
       this._fpsN = 0; this._fpsT = 0; this._cpuArr = [];
       this._cadArr = [];
       this._gMin = null; this._gMax = null;
+      PERF.window();   // perf 归因与地勤仪表同一个 0.5 s 窗口
     }
     const _frameStart = performance.now();
+    PERF.frameStart();
     /* 雨（D4）：雨丝雨量往渲染器送的通道，1.4 s 时间常数淡入淡出 ——
        设置里切天气时雨是"落下来"的，不是瞬间贴上去的。雨刮相位只在雨天推进。 */
     const rainTgt = this.rain ? 1 : 0;
@@ -2708,6 +2772,7 @@ class App {
     if (this.showcase && !this.running) this.showcase.t += dt;
 
     const s = this.running && this.session ? this.session.s : (this.showcase ? this.showcase.s : 200);
+    PERF.mark('sim');
     if (this.running && this.session && dt > 0) {
       this.session.update(dt);
       /* AI 车队跟着跑。玩家是这条链上的一列普通车：
@@ -2727,6 +2792,7 @@ class App {
       }
       /* 站台人群跟着客流走（第 101 条）。放在 session.update 之后：
          这一帧的乘降已经推进过，读到的候乘人数才是最新的。 */
+      PERF.mark('crowd');
       this.syncCrowd(dt);
       /* HUD 更新限频到 15 Hz（111-6 稳帧）：每帧一次 updateHUD 走几十个 DOM
          读写（getElementById ×N + textContent 比对），重排成本集中砸在帧里；
@@ -2736,6 +2802,7 @@ class App {
     }
     /* 司机台屏：每帧调，但内部按"文字真的变了"才重传纹理。
        放在 begin() 之前 —— 同一帧就要看到新画面，否则永远慢一帧。 */
+    PERF.mark('screens');
     this.drawCab();
     this.drawGauges();
     this.updatePtd();
@@ -2759,10 +2826,13 @@ class App {
       this.pitch += (this.pitchT - this.pitch) * kLook;
     }
 
+    PERF.mark('cam');
     const cam = this.camera();
     const env = this.envFor(s);
+    PERF.mark('begin');
     this.r.begin(cam, env, dt);
-    const IDENT = mat4();
+    PERF.mark('world');
+    const IDENT = IDENT_M;
     // 远景地面：贴着相机脚下的 XZ 位置平移，高度取线路基准面。
     // 基准是 `al.groundY(s) + SH.STREET_Y − 0.4`，与烘焙街面（al.streetDy）**同源**：
     // 差 0.4 m 是为了永远在街面之下 —— 以前这里用平滑轨面、街面用局部轨面，
@@ -2917,6 +2987,7 @@ class App {
         console.warn('街面车流实例对账不平：应提交 ' + this.street._expect + ' 实提交 ' + this.street._drawn);
       }
     }
+    PERF.mark('post');
     this.r.end();
     /* 帧 CPU 耗时采样（地勤仪表用，见 frame() 顶部）。 */
     (this._cpuArr = this._cpuArr || []).push(performance.now() - _frameStart);
@@ -2925,6 +2996,7 @@ class App {
       this.audio.update({ kmh: tr.kmh, a: tr.a, jerk: tr.jerk, trac: tr.trac, regen: tr.regen, air: tr.air, slip: tr.slip, airBuild: tr.airBuild, s: this.session.s },
         { tunnel: this.line.isElevated(this.session.s) ? 0.05 : 1, curveK: this.session.curveK, doors: this.session.doors }, dt);
     }
+    PERF.close();
   }
   bind() {
     const activate = () => { this.audio.init(); this.audio.setEnabled(this.settings.sound !== false); this.audio.setVolume((this.settings.volume == null ? 70 : this.settings.volume) / 100); window.removeEventListener('pointerdown', activate); };

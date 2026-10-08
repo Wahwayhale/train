@@ -2463,6 +2463,55 @@ if (process.env.NEG === 'limiter') SH.JERK = { up: 20, dn: 20, eb: 20 };`),
     disk: ['./src/game.js', 'bestSize(this.r.maxTexSize())', 'bestSize(this.r.gl)', 'all'],
     patch: t => t,
   },
+  /* ---- A 轨 帧循环零分配（2026-10-08）：test-perf.js 的六条负控 ----
+     这一族的缺陷全是"静默的性能退化"——把每帧分配塞回提交路径，画面照画、
+     套件照绿，只有帧时分布会说话。所以每条都必须被 test-perf 抓住报红。 */
+  {
+    /* begin 又把 vec3 现算成 new Float32Array —— 每帧 ~10 个短命数组回来了。 */
+    name: 'perfalloc', why: 'begin 的 uniform 上传退回每帧 new Float32Array（GC 压力回来了）',
+    expect: ['begin 的方法体里出现 new Float32Array'], script: './test-perf.js',
+    disk: ['./src/renderer.js', 'gl.uniform3fv(this.u.eye, _set3(_u3, cam.eye));',
+      'gl.uniform3fv(this.u.eye, new Float32Array(cam.eye));'],
+    patch: t => t,
+  },
+  {
+    /* _drawSky 又把位置查询搬回帧内 —— 每帧 13 次按名查驱动字符串表。 */
+    name: 'perfloc', why: '_drawSky 帧内重新调用 getUniformLocation（位置表缓存被绕过）',
+    expect: ['_drawSky 的方法体里有 getUniformLocation'], script: './test-perf.js',
+    disk: ['./src/renderer.js', 'gl.uniform3fv(L.uRight, r);',
+      "gl.uniform3fv(gl.getUniformLocation(this.pgSky, 'uRight'), r);"],
+    patch: t => t,
+  },
+  {
+    /* draw 的覆盖参数兜底又每帧新建对象 —— 驾驶室档每帧几百次。 */
+    name: 'perfempty', why: 'draw 的 ov 兜底退回 ov = ov || {}（每帧几百个短命对象）',
+    expect: ['draw 的 ov = ov || {} 又回来了'], script: './test-perf.js',
+    disk: ['./src/renderer.js', 'ov = ov || EMPTY;   // 149 条 perf/GC：每帧几百次 draw 的共享只读兜底（_drawBatch 只读不写）',
+      'ov = ov || {};'],
+    patch: t => t,
+  },
+  {
+    /* 实例数据缓冲不再复用 —— 每组实例一次 KB 级分配（街面车流按组分批）。 */
+    name: 'perfinst', why: 'drawInstanced 退回每调用 new Float32Array(n*STR)',
+    expect: ['drawInstanced 又在每调用'], script: './test-perf.js',
+    disk: ['./src/renderer.js', 'const data = this._instData.subarray(0, n * STR);',
+      'const data = new Float32Array(n * STR);'],
+    patch: t => t,
+  },
+  {
+    /* envFor 的 envAt 分桶缓存失效 —— 天光每帧重算，~30 个数组/帧回来了。 */
+    name: 'perfenv', why: 'envFor 每帧重算 envAt（分桶缓存被拆）',
+    expect: ['envFor 的 envAt 分桶缓存'], script: './test-perf.js',
+    disk: ['./src/game.js', 'if (!this._envT || this._envT.k !== kb)', 'if (true)'],
+    patch: t => t,
+  },
+  {
+    /* PERF 成对打点被拆 —— 子系统归因静默失效，帧循环里再塞大件没人看得见。 */
+    name: 'perfpair', why: 'frame 循环缺 PERF.frameStart/close（?perf=1 归因失效）',
+    expect: ['PERF.frameStart/close'], script: './test-perf.js',
+    disk: ['./src/game.js', 'PERF.frameStart();', 'void 0;'],
+    patch: t => t,
+  },
 ];
 
 /* 这个 harness 自己也要防"空跑"：第一版忘了把 `NEG` 传进子进程环境，

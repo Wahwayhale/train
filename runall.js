@@ -43,6 +43,7 @@ const SUITE = [
   ['test-scene.js', '街区类型学'],
   ['test-tex.js', '贴图质量'],
   ['test-gles.js', '着色器/后端'],
+  ['test-perf.js', '帧循环零分配'],
 ];
 const only = process.argv.slice(2);
 let bad = 0, t0 = Date.now();
