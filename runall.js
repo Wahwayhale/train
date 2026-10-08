@@ -1,6 +1,27 @@
 // 批跑全部离线自测：同时看退出码与红字行（缺一个都可能把崩溃读成通过）。
 // 用法: node runall.js [只跑某几个（空格分隔的名字前缀）]
 const { spawnSync } = require('child_process'), path = require('path');
+const fs = require('fs'), vm = require('vm');
+// 语法闸（判据）：src/ data/ 根目录任何一个 .js 语法错，先点名报红再退出——
+// 基线事故（renderer.js 模板串里的反引号）当时的症状是 0/19 全崩、没有任何一行
+// 告诉你病根在哪个文件。着色器模板串里不许出现反引号（规矩写在 renderer.js 自己的注释里）。
+// C 轨在 webgpu 分支另有同族负控 gsrcsyntax，合流后二者共存不冲突。
+{
+  const bad = [];
+  for (const d of ['src', 'data', '.']) {
+    const base = path.join(__dirname, d);
+    if (!fs.existsSync(base)) continue;
+    for (const f of fs.readdirSync(base)) {
+      if (!f.endsWith('.js') || !fs.statSync(path.join(base, f)).isFile()) continue;
+      try { new vm.Script(fs.readFileSync(path.join(base, f), 'utf8'), { filename: f }); }
+      catch (e) { bad.push((d === '.' ? '' : d + '/') + f + ' — ' + String(e.message).split('\n')[0]); }
+    }
+  }
+  if (bad.length) {
+    for (const b of bad) console.log('FAIL 语法闸  ' + b);
+    process.exit(1);
+  }
+}
 const SUITE = [
   ['test-core.js', '线形几何'],
   ['test-traffic.js', '调度/信号'],
