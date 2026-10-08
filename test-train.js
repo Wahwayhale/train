@@ -307,5 +307,119 @@ for (const key of stocks) {
   }
 }
 
+/* ================== 接触影（视觉方案 1.3 / Phase B）==================
+ * 列车以前没有任何影子 —— 外视角里整列车"浮"在轨道上。这一族判据：
+ *   ① 几何：buildContactShadow 烘出的影块贴地（y ≈ 0）、覆盖车长与转向架；
+ *   ② 透明度：contactShadowAlpha 隧道=0 / 夜间衰减 / 高架正午最浓 ——
+ *      三档单独量，"隧道里没有太阳"是口径而不是巧合；
+ *   ③ 行为：产品 TrainView.draw 真的画了影子（录制型 renderer 记账），
+ *      且 alpha 随 r.shadowK 变 —— 影子不随车动的那族缺陷由矩阵对账抓。
+ */
+{
+  const errs = [];
+  const p = Object.assign({}, SH.train.DEFAULTS, SH.STOCK.A8);
+  /* ① 几何 */
+  {
+    const g = SH.train.buildContactShadow(p);
+    const rub = g.filter(m => m.mat === 'rubber');
+    if (!g.length || !rub.length) errs.push('接触影一块 rubber 都没烘出来 —— 影子不存在');
+    else {
+      let yMin = 1e9, yMax = -1e9, zMin = 1e9, zMax = -1e9, xMax = 0;
+      for (const m of rub) {
+        for (let i = 0; i < m.verts; i++) {
+          const x = m.pos[i * 3], y = m.pos[i * 3 + 1], z = m.pos[i * 3 + 2];
+          if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+          if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+          if (Math.abs(x) > xMax) xMax = Math.abs(x);
+        }
+      }
+      if (yMin < -0.5 || yMax > 0.5) errs.push(`影块的 y 范围 ${yMin.toFixed(2)}~${yMax.toFixed(2)} 不贴地（应 ≈0，贴地矩阵压 −0.09 是绘制时的事）`);
+      if (zMax - zMin < p.midLen) errs.push(`影块纵向只覆盖 ${(zMax - zMin).toFixed(1)} m（车长 ${p.midLen} m）—— 车尾漏光`);
+      if (xMax < p.width * 0.35) errs.push(`影块半宽只有 ${xMax.toFixed(2)} m（车宽/2 = ${(p.width / 2).toFixed(2)}）—— 影比车窄太多，读不出轮廓`);
+    }
+  }
+  /* ② 透明度三档 */
+  {
+    const A = SH.train.contactShadowAlpha;
+    if (A(1, 0) !== 0) errs.push('隧道（open=0）里接触影不为 0 —— 没有太阳就没有影子');
+    if (!(A(1, 1) > A(0.3, 1) && A(0.3, 1) > 0)) errs.push('太阳亮度不调制影子 —— 夜间列车拖着一条硬影');
+    if (!(A(1, 1) >= 0.2)) errs.push(`高架正午的影子只有 ${A(1, 1).toFixed(3)} —— 读不出来等于没有`);
+    if (!(A(1, 0.5) < A(1, 1))) errs.push('露天程度不调制影子 —— 洞口处应渐隐');
+  }
+  /* ③ 行为：draw 真的画影子且随 alpha 走（录制型 renderer，与雨刮判据同族） */
+  {
+    const gsrc = require('fs').readFileSync(path.join(__dirname, 'src', 'game.js'), 'utf8');
+    const gi2 = gsrc.indexOf('class TrainView');
+    let d = 0, ge2 = -1;
+    for (let k = gsrc.indexOf('{', gi2); k < gsrc.length; k++) { if (gsrc[k] === '{') d++; else if (gsrc[k] === '}') { d--; if (!d) { ge2 = k + 1; break; } } }
+    if (gi2 < 0 || ge2 < 0) errs.push('取不到 game.js 的 TrainView —— 行为判据断了');
+    else {
+      const GTV = eval('(' + gsrc.slice(gi2, ge2) + ')');
+      /* TrainView 的类体引用模块级的 m4basis/m4mul/m4trs —— eval 出的类不在
+         原模块作用域里，判据把 core 的这几个矩阵工具挂到全局（同一份实现）。 */
+      global.CAR_GAP = 0.35;
+      global.m4basis = SH.m4basis; global.m4mul = SH.m4mul; global.m4trs = SH.m4trs;
+      global.m4rotY = SH.m4rotY; global.mat4 = SH.mat4; global.m3normalFromM4 = SH.m3normalFromM4;
+      const al = SH.buildLineAlignment(['A', 'B', 'C'], [3000, 3000], 7);
+      const line = { al, stations: ['A', 'B', 'C'], profile: p, id: 't',
+        stationSide: () => 1, stationSAt: () => 1500, nearStation: () => ({ i: 0, d: 0, s: 1500 }),
+        openness: () => 1, isElevated: () => true, boardSideAt: () => 1, oppLatAt: () => 0 };
+      let last = null;
+      const rec = k => {
+        const ev = [];
+        return {
+          ev,
+          /* upload 必须按 **tag** 标记批次：接触影的 tag 是 'train'（与车体同组
+             生命周期），判据靠 tag 找到影子批次 —— 影子几何的 mat 是 rubber，
+             车底裙板也可能是 rubber，只认 tag 才排他。 */
+          upload(ms, tag) { return (Array.isArray(ms) ? ms : [ms]).map(m => ({ mat: m && m.mat, _k: tag || 't', _m: m })); },
+          dropTag() {},
+          draw(b, M, ov) { if (b && b._k === 'train' && b._m && b._m.mat === 'rubber' && b._m._shadow) ev.push(k + ':' + (ov && ov.alpha != null ? +ov.alpha.toFixed(3) : '-')); },
+          shadowK: k,
+        };
+      };
+      /* 影子批次打上 _shadow 记号：TrainView.setLine 上传 buildContactShadow 的
+         产物（tag 'train'），判据按"mat=rubber + 顶点 y 全在 0 附近"识别影块。 */
+      const isShadowMesh = m => m && m.mat === 'rubber' && (() => {
+        if (!m.pos || !m.verts) return false;
+        for (let i = 0; i < m.verts; i++) if (Math.abs(m.pos[i * 3 + 1]) > 0.3) return false;
+        return true;
+      })();
+      const markShadow = (r) => {
+        const up = r.upload.bind(r);
+        r.upload = (ms, tag) => up(Array.isArray(ms) ? ms : [ms], tag);
+        return r;
+      };
+      const mk = k => {
+        const r = rec(k);
+        /* 拦 upload 给影子网格打记号（_shadow）：setLine 内部 buildContactShadow
+           一次烘三块（车底 + 两台转向架），全是贴地 rubber —— 按几何特征识别。 */
+        const up0 = r.upload.bind(r);
+        r.upload = (ms, tag) => up0((Array.isArray(ms) ? ms : [ms]).map(m => Object.assign(m, isShadowMesh(m) ? { _shadow: 1 } : {})), tag);
+        const v = new GTV(r); v.setLine(line, null, null); return { v, r };
+      };
+      const a = mk(0.4), b = mk(0.8);
+      a.v.draw(200, 0, { fill: 0.5 }); b.v.draw(200, 0, { fill: 0.5 });
+      if (!a.r.ev.length) errs.push('draw() 一次都没画影子（shadowK=0.4 在场）—— 接触影没接进玩家路径');
+      else {
+        const alphaA = +a.r.ev[0].split(':')[1], alphaB = +b.r.ev[0].split(':')[1];
+        if (!(alphaB > alphaA)) errs.push(`两次 draw 的影子 alpha 不随 shadowK 变（${alphaA} vs ${alphaB}）—— 夜间/隧道不会淡出`);
+        /* 随车移动：换 sHead 再画一次，矩阵必须不同（影子跟着车走）。 */
+        const r2 = mk(0.4);
+        const mats = new Set();
+        const r3 = r2.r;
+        const d0 = r3.draw.bind(r3);
+        r3.draw = (bb, M, ov) => { if (bb && bb._m && bb._m._shadow) mats.add(Array.from(M || []).map(x => +x.toFixed(4)).join(',')); d0(bb, M, ov); };
+        r2.v.draw(200, 0, { fill: 0.5 }); const m1 = [...mats]; mats.clear();
+        r2.v.draw(400, 0, { fill: 0.5 });
+        if (!m1.length) errs.push('影子矩阵一条都没记到 —— 记账口径断了');
+        else if (m1.join('|') === [...mats].join('|')) errs.push('sHead 前进 200 m 影子矩阵纹丝不动 —— 影子不随车');
+      }
+    }
+  }
+  if (errs.length) { for (const e of errs) bad('  ✗ ' + e); }
+  else console.log('  ✓ 接触影：贴地覆盖全车 · 隧道 0/夜淡/昼浓三档 · draw 真画且随车随 alpha');
+}
+
 console.log(fails ? `\n✗ 列车几何判据 ${fails} 条不通过` : '\n✓ 列车几何判据全部通过');
 process.exit(fails ? 1 : 0);

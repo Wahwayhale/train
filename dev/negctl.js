@@ -2541,6 +2541,34 @@ if (process.env.NEG === 'limiter') SH.JERK = { up: 20, dn: 20, eb: 20 };`),
     disk: ['./src/textures.js', "if (NRM_STRENGTH[n]) renderer.texFromCanvas(n + 'N', normalFromCanvas(c, NRM_STRENGTH[n]), true);", ''],
     patch: t => t,
   },
+  /* ---- A 轨 Phase B（2026-10-08）：1.3 影向随太阳 / 列车接触影 的负控 ---- */
+  {
+    /* 影向退回写死黄昏：白天开一局，太阳与楼影方向拧着 —— 视觉方案 1.3 的
+       正面缺陷。判据：test-land 的"影向随太阳"量向段（dusk↔dawn 两档烘焙，
+       含"移动占比过半"那条 —— 影向写死时只剩别的 rubber 几何的噪声位错）。 */
+    name: 'shadowfix', why: '影向退回写死黄昏（_shadow 不读 cfg.sunDir —— 影与太阳拧着）',
+    expect: ['影向没跟着太阳走'], script: './test-land.js',
+    disk: ['./src/world.js', 'const SD = this.shadowDir || SHADOW_DIR;',
+      'const SD = SHADOW_DIR;'],
+    patch: t => t,
+  },
+  {
+    /* 接触影整块不画：外视角列车"浮"在轨道上 —— 且没有任何几何判据看得见
+       （画不画都全绿的那族），只有行为记账抓得住。 */
+    name: 'shadowoff', why: '接触影从玩家路径整块不画（列车浮在轨道上）',
+    expect: ['一次都没画影子'], script: './test-train.js',
+    disk: ['./src/game.js', 'if (this.shadowB && this.shadowB.length && r.shadowK > 0 && !r.cabView) {',
+      'if (false) {'],
+    patch: t => t,
+  },
+  {
+    /* 影子不随 alpha 变：隧道里拖着硬影、夜间照样漆黑一条 —— 透明度通道断了。 */
+    name: 'shadowa0', why: '接触影 alpha 恒 0.34（隧道/夜间不会淡出）',
+    expect: ['太阳亮度不调制影子'], script: './test-train.js',
+    disk: ['./src/train.js', 'return 0.34 * open * Math.min(1, k / 0.55);',
+      'return 0.34;'],
+    patch: t => t,
+  },
 ];
 
 /* 这个 harness 自己也要防"空跑"：第一版忘了把 `NEG` 传进子进程环境，

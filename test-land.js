@@ -112,3 +112,88 @@ console.log('\n【楼体互穿检查】');
 ✓ ${lotTot} 栋楼两两不穿插`);
   if (badTot) process.exitCode = 1;
 })();
+
+/* ================= 影向随太阳（视觉方案 1.3 / Phase B）=================
+ * 以前 SHADOW_DIR 写死黄昏：白天开一局，太阳挂在天上，楼影却仍往黄昏方向倒 ——
+ * 影与光是拧着的，而既有判据全绿（谁也没量过影与太阳的夹角）。
+ * 判据分两层，全部量**烘焙出来的几何**（顶点位移方向），不读源码常量：
+ *   ① 单点：SH.shadowDirOf(太阳) 与旧口径 SH.SHADOW_DIR_DUSK 在 dusk 输入下
+ *      逐分量一致（缺省档 = 旧口径，既有判据与基线零扰动的依据）；
+ *   ② 几何：同一 synthetic 线路烘两个世界（dusk 与 day 的太阳方位差 ~90°），
+ *      各取若干"同源落影块对"（_shadow 的 rubber 面 + 桥面投影带），量每对
+ *      块心连线在 xz 平面的方向 —— 它必须与两档 shadowDirOf 的差向量同向
+ *      （夹角 < 30°）。量几何而不是量 cfg，是因为"cfg 传了但 _shadow 没读"
+ *      恰恰是这一族缺陷的静默形态。
+ */
+(function shadowDir() {
+  const errs = [];
+  /* ① 单点 + 缺省一致性 */
+  const duskDir = SH.shadowDirOf(SH.ENVS.dusk.sunDir);
+  const D0 = SH.SHADOW_DIR_DUSK;
+  if (!duskDir || Math.hypot(duskDir[0], duskDir[1]) < 0.999 || Math.hypot(duskDir[0], duskDir[1]) > 1.001)
+    errs.push('shadowDirOf 不返回单位向量（' + duskDir + '）');
+  if (Math.abs(duskDir[0] - D0[0]) > 1e-9 || Math.abs(duskDir[1] - D0[1]) > 1e-9)
+    errs.push('缺省档口径漂移：shadowDirOf(dusk) ≠ SHADOW_DIR_DUSK —— 既有基线会被无谓推动');
+  const nightDir = SH.shadowDirOf(SH.ENVS.night.sunDir);
+  if (nightDir[0] === duskDir[0] && nightDir[1] === duskDir[1])
+    errs.push('不同太阳给同一个影向 —— 单点在恒等返回');
+
+  /* ② 几何量向：烘两档，量落影块对的位移方向 */
+  const bakeShadowCenters = sunDir => {
+    const wb = new SH.WorldBuilder({
+      al, color: '#f00', color2: '#00f', stations,
+      sign: new SH.textures.SignAtlas(256), night: 0.62, sunDir,
+    });
+    wb.sun = null; wb._installLight();
+    wb.city(0, al.total, 42);          // 沿街楼群（_shadow 的主消费者）
+    const g = wb.b.finish();
+    /* rubber 面片：_shadow 的每一片落影都是 faces:[2] 的 0.02 m 薄盒 ——
+       取"每 4 个顶点一个块"的近似（box 面），块心 = 顶点均值。 */
+    const centers = [];
+    for (const m of g) {
+      if (m.mat !== 'rubber') continue;
+      const P = m.pos;
+      for (let i = 0; i + 3 < m.verts; i += 4) {
+        let x = 0, z = 0;
+        for (let k = 0; k < 4; k++) { x += P[(i + k) * 3]; z += P[(i + k) * 3 + 2]; }
+        centers.push([x / 4, z / 4]);
+      }
+    }
+    return centers;
+  };
+  const cDusk = bakeShadowCenters(SH.ENVS.dusk.sunDir);
+  const cDawn = bakeShadowCenters(SH.ENVS.dawn.sunDir);
+  if (cDusk.length < 8 || cDusk.length !== cDawn.length)
+    errs.push('落影块数量异常（dusk ' + cDusk.length + ' / dawn ' + cDawn.length + '）—— 两档烘焙不同构，量向没法做');
+  else {
+    /* 成对块心的位移方向：dusk→dawn 的移动必须与两档影向的差同向。
+       块按生成顺序一一对应（同源 footprint、同 steps），排序稳定。
+       选 dusk↔dawn（影向差 0.32）而不是 dusk↔day（0.20）—— ENVS 四档的
+       太阳方位都集中在西半边（投影口的历史口径），分辨力取最大的一对。 */
+    const sd = SH.shadowDirOf(SH.ENVS.dusk.sunDir), sy = SH.shadowDirOf(SH.ENVS.dawn.sunDir);
+    const dxT = sy[0] - sd[0], dzT = sy[1] - sd[1];
+    const tLen = Math.hypot(dxT, dzT);
+    if (tLen < 0.25) errs.push('两档太阳的影向差太小（' + tLen.toFixed(3) + '）—— 判据没有分辨力');
+    else {
+      let aligned = 0, total = 0, cosSum = 0, blocks = cDusk.length;
+      for (let i = 0; i < cDusk.length; i++) {
+        const dx = cDawn[i][0] - cDusk[i][0], dz = cDawn[i][1] - cDusk[i][1];
+        const l = Math.hypot(dx, dz);
+        if (l < 0.5) continue;                     // 位移接近零的块不参与统计
+        total++;
+        const cos = (dx * dxT + dz * dzT) / (l * tLen);
+        cosSum += cos;
+        if (cos > Math.cos(Math.PI / 6)) aligned++; // 夹角 < 30°
+      }
+      if (total < 8) errs.push('可统计的位移块只有 ' + total + ' 个（应 ≥8 —— 量向判据样本不足）');
+      /* 移动占比：影向真的跟随太阳时，几乎所有落影块都会挪位（实测 5289/5293）。
+         影向写死时只剩零头在动（别的 rubber 几何在两档间的噪声位错）——
+         这条把"方向对但其实是别的几何在动"的假绿挡掉。 */
+      else if (total < blocks * 0.5) errs.push(`落影块只有 ${total}/${blocks} 个在动（应过半）—— 影向没跟着太阳走，移动的是别的几何`);
+      else if (aligned < total * 0.8) errs.push('落影块的位移只有 ' + aligned + '/' + total + ' 与影向差同向（<30°）—— 影没有跟着太阳走');
+      else console.log(`  ✓ 影向随太阳：${total}/${blocks} 块落影位移均值 cos ${(cosSum / total).toFixed(3)}（同向占比 ${(aligned / total * 100) | 0}%），dusk→dawn 的影向差 ${(tLen).toFixed(2)}`);
+    }
+  }
+  if (errs.length) { for (const e of errs) console.log('  ✗ ' + e); process.exitCode = 1; }
+  else console.log('  ✓ 影向单点：单位向量 · 缺省档与旧口径逐分量一致 · 夜/昏不同向');
+})();

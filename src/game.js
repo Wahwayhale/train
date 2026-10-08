@@ -11,6 +11,8 @@ const { clamp: C, lerp, rgbOf, rng, hash32, m4basis, m4trs, m4mul, mat4, m3norma
 const { Builder, Geo } = SH;
 const { cross, norm3 } = Geo;
 const IDENT_M = mat4();   // 149 条 perf/GC：帧循环里的单位阵从每帧 mat4() 提为模块级
+/* 接触影的贴地矩阵在 train.js（SH.SHADOW_M，影子几何的同一处）：
+   判据用 eval 抠 TrainView 类体离线跑，模块级符号在 eval 作用域里不可见。 */
 
 /* 三分量就地插值（149 条 perf/GC）：envFor 原来每帧 5 个 .map() 各产一个
    新数组 —— 写进持久缓冲，零分配。 */
@@ -639,8 +641,9 @@ SH.sightCorridors = (line) => {
 
 
 class World {
-  constructor(renderer) {
+  constructor(renderer, app) {
     this.r = renderer;
+    this.app = app;      // 影向取当刻太阳（视觉方案 1.3）：读 app.hourNow，不读缓存
     this.tag = 0;
     this.districts = new Map();      // key -> {batches, psd, stations}
     /* 站牌图集**只能有一张**，就是 App 上传给 GPU 的那一张。
@@ -704,10 +707,15 @@ class World {
     s0 = Math.max(0, s0); s1 = Math.min(al.total, s1);
     const sign = this.sign;
     if (!sign) throw new Error('World.sign 未设置：站牌会全部画进一张永不上传的临时图集（全线站牌显示同一个站名）');
+    /* 影向跟当天太阳（视觉方案 1.3）：落地投影（楼/树/桥面带）按 envAt(当前钟点)
+       的太阳方位推 —— 影与天上的太阳同源，缺省（hourNow 读不到时）回落 dusk
+       旧口径。烘焙是分钟级的（一次 80 ms、隔几百米才重烘），太阳方位在窗口内
+       基本不动，取烘焙时刻的值即可；换时段后的第一次重烘影向自然跟过去。 */
+    const T0 = SH.envAt(this.app && this.app.hourNow != null ? this.app.hourNow : 18.5);
     const wb = new SH.WorldBuilder({
       al, color: line.color, color2: line.color2, stations: line.stations,
       sign, night: 0.62, profile: line.profile, waterRanges: line.waterRanges(),
-      sightClear: SH.sightCorridors(line),
+      sightClear: SH.sightCorridors(line), sunDir: T0.sunDir,
     });
     // 只烘人工光；太阳与半球环境光交给运行时着色器（见 WorldBuilder._installLight）
     wb.sun = null;
@@ -994,6 +1002,9 @@ class TrainView {
     /* 指示灯每盏单独成批：几何仍是一次烘焙，动的只是绘制时的 `{emi:}` 覆盖。 */
     this.lampB = this.tv.lamps.map(o => ({ key: o.key, b: this.r.upload(o.mesh, 'train') }));
     this.beamB = this.r.upload(SH.train.buildBeam(p), 'train');
+    /* 接触影批次（视觉方案 1.3）：几何按车体局部系烘一次，绘制时与车体
+       同一份矩阵（y 已在矩阵外压到轨面下 0.09），三条路径（玩家/AI/对向）共用。 */
+    this.shadowB = this.r.upload(SH.train.buildContactShadow(p), 'train');
   }
   /**
    * 绘制一台列车的全部车体批次。
@@ -1127,6 +1138,12 @@ class TrainView {
       const fr = al.frame(cars[ci].s);
       ms.push(m4basis([fr.r[0], fr.r[1], fr.r[2]], [fr.u[0], fr.u[1], fr.u[2]], [fr.f[0], fr.f[1], fr.f[2]], fr.p));
     }
+    /* 接触影（视觉方案 1.3）：外视角列车落地。alpha 由露天程度×当刻太阳给
+       （shadowK 在 frame() 里每帧算好，挂在渲染器上），绘制在车体之前 ——
+       半透面不写深度，先画车影再画车体，车体把影的中段盖住、边缘露出来。 */
+    if (this.shadowB && this.shadowB.length && this.r.shadowK > 0) {
+      for (const M of ms) for (const b of this.shadowB) this.r.draw(b, m4mul(M, SH.SHADOW_M), { alpha: this.r.shadowK });
+    }
     if (this.r.drawInstanced && this.midCarB) {
       this._drawTrainInstanced(ms, [0, cars.length - 1], open, load, lampK, seed || 0, doorSide);
     } else {
@@ -1154,6 +1171,10 @@ class TrainView {
          会把整列车画成偏离自己股道半米，车头在轨上、车尾在道床外。 */
       ms.push(m4basis([-fr.r[0], -fr.r[1], -fr.r[2]], [fr.u[0], fr.u[1], fr.u[2]], [-fr.f[0], -fr.f[1], -fr.f[2]], al.world(fr, this.line.oppLatAt(carS), 0)));
       cur += len + CAR_GAP;
+    }
+    /* 接触影（视觉方案 1.3）：与 drawExternal 同一块影子几何、同一份 alpha。 */
+    if (this.shadowB && this.shadowB.length && this.r.shadowK > 0) {
+      for (const M of ms) for (const b of this.shadowB) this.r.draw(b, m4mul(M, SH.SHADOW_M), { alpha: this.r.shadowK });
     }
     if (this.r.drawInstanced && this.midCarB) {
       this._drawTrainInstanced(ms, [0, p.cars - 1], open, load, lampK, seed || 0, doorSide);
@@ -1183,6 +1204,15 @@ class TrainView {
     const doorSideAll = this.line ? SH.boardSideAt(this.line, sHead) : 1;
     const lampKAll = SH.train.doorLampK(open, cab && cab.doorsOpen === false, this.now || 0);
     const useInst = !!(r.drawInstanced && this.midCarB && cars.length > 2);
+    /* 接触影（视觉方案 1.3）：先于全部车体画 —— 半透不写深度，影的中段随后
+       被车体盖住、只露出边缘软带。驾驶室视角不画（低头看不见车底，白一批）。 */
+    if (this.shadowB && this.shadowB.length && r.shadowK > 0 && !r.cabView) {
+      for (const c of cars) {
+        const fr = al.frame(c.s);
+        const MS = m4basis([fr.r[0], fr.r[1], fr.r[2]], [fr.u[0], fr.u[1], fr.u[2]], [fr.f[0], fr.f[1], fr.f[2]], fr.p);
+        for (const b of this.shadowB) r.draw(b, m4mul(MS, SH.SHADOW_M), { alpha: r.shadowK });
+      }
+    }
     const midIdx = [], midMs = [];
     for (let ci = 0; ci < cars.length; ci++) {
       const c = cars[ci];
@@ -1769,7 +1799,7 @@ class App {
     for (const [n, f] of [['l1_side', 'l1_side.png'], ['l1_front', 'l1_front.png'], ['l1_roof', 'l1_roof.png'],
       ['l1_bogie', 'l1_bogie.png'], ['l1_wheel', 'l1_wheel.png'], ['l1_ac', 'l1_ac.png']])
       this.r.texFromImage(n, 'assets/l1train/' + f, false);
-    this.world = new World(this.r);
+    this.world = new World(this.r, this);
     /* 1 号线列车的 **BVE 模型本体**（用户给的模型，README 第 146 条）：
        6 节车的 CSV 拉下来解析 → 注册材质 → 拉贴图 → 重建列车视图。
        全部是异步的，没到位之前列车走程序化车体（不会画出一列空车）。 */
@@ -2829,6 +2859,11 @@ class App {
     PERF.mark('cam');
     const cam = this.camera();
     const env = this.envFor(s);
+    /* 接触影的 alpha（视觉方案 1.3）：露天程度 × 当刻太阳亮度 —— 隧道里为 0
+       （三类绘制路径读同一个 r.shadowK，与 beamOn 同一条"挂渲染器"口径）。 */
+    this.r.shadowK = SH.train.contactShadowAlpha(
+      env.sunCol ? (env.sunCol[0] + env.sunCol[1] + env.sunCol[2]) / 3 : 1,
+      this.line.openness(s));
     PERF.mark('begin');
     this.r.begin(cam, env, dt);
     PERF.mark('world');

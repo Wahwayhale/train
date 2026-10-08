@@ -1022,6 +1022,13 @@ node runall.js         # 一次跑完上面 18 个脚本，检查 rc **与红字
 - **负控** ×4（`nrmloc` 摘定位表 / `nrmbind` 摘 TEXTURE1 绑定 / `nrmzero` 缺省强度不查清单 / `nrmgen` buildAll 不再生成 `<名>N`）逐条实跑报红 ✓。nrmgen 那条钉在"生成行必须在场"上 —— 判据自己预填注册表模拟 buildAll（否则离线判据测不到消费端），生成端被拆时 ⑤ 仍绿是**对的**（缺图退 0 正确），所以红字钉生成行本身。
 - **帧循环纪律不受影响**：`_drawBatch` 新增路径零分配、零 getUniformLocation（走构造期位置表），test-perf 全绿；node runall 22/22。`node runall.js` 注册 test-nrm 于 SUITE 末位。
 
+**151. 影向随当日太阳 + 列车接触影（视觉方案 1.3，顺手清升级清单 4.1）："白天影子朝北"与"列车浮在轨道上"两笔一起还掉。** 体检结论第 3 条的前半：落地投影的 `SHADOW_DIR` 写死黄昏太阳的方位角（"户外只跑 dusk"时代口径），白天开一局，太阳挂在天上、楼影倒向北边，影与光拧着而所有判据都绿；列车则完全没有任何影子 —— 外视角与站台视角里整列车浮在轨道上，"浮"的第二主因。
+- **影向单点（SH.shadowDirOf）**：给定太阳方向返回地面投影单位向量（取反 + xz 归一化）。`WorldBuilder` 构造期从 `cfg.sunDir` 推（缺省 = dusk 旧口径，与旧行为逐字节一致 —— 既有判据与 geohash 基线零扰动），`_shadow`（楼/树/站厅）与高架桥面投影带两处消费者全部改读 `this.shadowDir`；`game.js` 的 `bake` 把 `envAt(当前钟点)` 的太阳传进去 —— 换时段后的第一次重烘影向自然跟过去（烘焙是分钟级的，窗口内太阳方位基本不动）。旧口径存档为 `SH.SHADOW_DIR_DUSK`。
+- **列车接触影（buildContactShadow + contactShadowAlpha）**：几何按车体局部系烘一次（车下一块长条 + 每台转向架一块本影，rubber 材质与既有落地投影同族），绘制时与车体同一份矩阵、经 `SH.SHADOW_M` 压到轨面下 0.09（轨面 0 与道床板顶 −0.05 之间，防 z-fight）；三条路径（玩家 draw / drawExternal / drawExternalOpp）共画，先于车体（半透不写深度，车体盖住中段、只露边缘软带）。alpha = `contactShadowAlpha(太阳亮度, 露天程度)`：隧道 0（没有太阳就没有影子）、夜间按 sunCol 衰减、洞口渐隐 —— 与"站场浮尘只在地下"同一条口径；每帧在 `frame()` 里算一次挂 `r.shadowK`（与 beamOn 同一条"挂渲染器"口径）。驾驶室视角不画（低头看不见车底）。
+- **判据**：test-land 追加「影向随太阳」一节 —— ① 单点：单位向量 / 缺省档与旧口径逐分量一致 / 夜≠昏；② **几何量向**（不读源码常量）：同一 synthetic 线路烘 dusk/dawn 两档，量 5289 块落影（rubber 面）块心位移的方向与两档影向差同向（cos 1.000、同向 100%）且**移动占比过半**（影向写死时只剩别的 rubber 几何的噪声位错 ≈9.5%，方向凑巧同向也会被占比挡掉 —— 第一版只看方向就被它骗过）。test-train 追加「接触影」一节：① 几何（贴地 y≈0、覆盖车长、半宽 ≥ 车宽七成）② 透明度三档（隧道 0 / 夜淡 / 昼浓 / 洞口渐隐）③ 行为（eval 抠 game.js 的 TrainView + 录制型 renderer：draw 真画影子、alpha 随 r.shadowK 变、sHead 前进 200 m 矩阵跟着动 —— 影子不随车走的那族缺陷由矩阵对账抓）。
+- **负控** ×3（`shadowfix` _shadow 退回写死黄昏 / `shadowoff` 玩家路径整块不画 / `shadowa0` alpha 恒 0.34 不再随太阳与露天变）逐条实跑报红 ✓。node runall 22/22。
+- **工程坑（记一笔）**：判据用 eval 抠 game.js 的 `TrainView` 类体离线跑时，模块级符号（`SHADOW_M`/`m4basis`/`CAR_GAP`）在 eval 作用域里不可见 —— 接触影的贴地矩阵因此挂在 `SH.SHADOW_M`（train.js，影子几何的同一处）而不是 game.js 模块级；判据侧补挂矩阵工具与 CAR_GAP 全局。这与 test-env 抠 LineRuntime 是同一族约束，新代码跨文件引用时要按"eval 可见"的口径写。
+
 
 
 

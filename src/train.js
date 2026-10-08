@@ -1502,6 +1502,42 @@ function buildBveBody(p, meshes, mirror) {
   return b.finish();
 }
 
+/* ------------------------------------------------------------ 列车接触影（视觉方案 1.3）
+ * 列车以前完全没有影子：外视角与站台视角里整列车"浮"在轨道上 —— 这是
+ * "浮"与"平"的第二主因（体检结论第 3 条）。做法与楼影同族：贴地软边扁块，
+ * 不用 shadow map。几何按**车体局部系**烘焙一次（车下一块、每台转向架各一块），
+ * 绘制时与车体同一份矩阵平移到轨面下 0.09 m（道床板顶 −0.05 与轨面 0 之间），
+ * 随车移动是矩阵的自然结果。
+ * 透明度由绘制方按"露天程度 × 太阳强度"给（SH.train.contactShadowAlpha）：
+ * 隧道里没有太阳就没有影子；夜间太阳亮度低，影子按 sunCol 的亮度衰减。
+ * blend 走 rubber 材质的常规半透通道 —— 与既有落地投影（_shadow）同一材质。 */
+function buildContactShadow(p) {
+  const b = new Builder();
+  const dark = [0.05, 0.055, 0.06];               // 近黑的"影色"（基色，alpha 由绘制方给）
+  const L = p.midLen, HB = p.bogieCenters / 2;
+  const W = p.width * 0.94;                       // 车影比车体略窄：边缘让光进来才"软"
+  /* 车下一块长条（覆盖整节车 + 车钩间隙的暗缝） */
+  b.box([0, 0, 0], [W, 0.02, L + p.gap], dark, { mat: 'rubber', faces: [2] });
+  /* 每台转向架一块加深的本影（轮对正下方最暗） */
+  for (const sz of [-HB, HB]) {
+    b.box([0, 0.001, sz], [W * 0.86, 0.02, 3.4], dark, { mat: 'rubber', faces: [2] });
+  }
+  return b.finish();
+}
+/** 接触影的透明度（0..1）：露天程度 × 当刻太阳亮度。
+ *  sunK = 太阳颜色的相对亮度（0..1 量级），open = 0 全地下 → 1 全高架。
+ *  隧道（open→0）里没有太阳贡献，影子必须消失 —— 与"站场浮尘只在地下出现"
+ *  同一条口径。夜间太阳亮度 0.2 以下时影子自然淡出（月光不投硬影）。 */
+function contactShadowAlpha(sunK, open) {
+  if (!(open > 0)) return 0;
+  const k = Math.max(0, Math.min(1, sunK == null ? 1 : sunK));
+  return 0.34 * open * Math.min(1, k / 0.55);
+}
+/* 接触影的贴地矩阵：把车体局部系 y 压到 −0.09（轨面 0 与道床板顶 −0.05
+   之间 —— 影子必须低于两者，否则与道床 z-fight）。挂 SH（判据用 eval 抠
+   game.js 的 TrainView 类体离线跑，模块级符号在 eval 作用域外不可见）。 */
+SH.SHADOW_M = m4trs([0, -0.09, 0], [1, 1, 1]);
+
 /* ------------------------------------------------------------ 列车视图 */
 class TrainView {
   constructor(profile, opt) {
@@ -1583,6 +1619,6 @@ SH.train = { DEFAULTS, buildMiddleCar, buildHeadCar, buildCabInterior, buildCarI
   windowBays, mullionZs, addGangway, WIN_PITCH, WIN_MULL, NOSE, noseOf,
   carLayout, buildCarPax, paxLevel, paxLevels, buildCarDoorLamps, doorLampK,
   buildCabLevers, buildCabLamps, buildCabWipers, LAMPS, LAMP_ON, LAMP_OFF, buildBeam, TrainView, bodyProfile,
-  LAYER, layerOf };
+  LAYER, layerOf, buildContactShadow, contactShadowAlpha };
 
 })(typeof window !== 'undefined' ? window : globalThis);

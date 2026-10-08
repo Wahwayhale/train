@@ -52,6 +52,19 @@ const CITY_BAND = { min: SH.STREET_WALK.lotLine, max: 97.5, base: SH.STREET_Y - 
    写死在这里是有意的 —— 户外只跑 dusk 一套环境，烘焙几何与它必须同源。 */
 const _sd = SH.ENVS.dusk.sunDir, _sl = Math.hypot(_sd[0], _sd[2]);
 const SHADOW_DIR = [-_sd[0] / _sl, -_sd[2] / _sl];
+/* —— 影向单点（视觉方案 1.3 / Phase B）：太阳在哪，影子就往哪边倒 ——
+   以前 SHADOW_DIR 写死黄昏（"户外只跑 dusk"的时代口径）：白天开一局，
+   太阳挂在南边天上，楼影却倒向北边 —— 影与光是拧着的，而所有判据都绿。
+   现在 `SH.shadowDirOf(sunDir)` 是影向的唯一出处：给定太阳方向（世界系，
+   y 向上），返回地面投影的单位向量（取反 + xz 归一化）。烘焙期的
+   WorldBuilder 从 cfg.sunDir 取（缺省 dusk —— 与旧行为逐字节一致，判据
+   全部钉在"缺省 = 旧口径"上）；bake 的调用方传当天真实太阳。 */
+SH.shadowDirOf = function (sunDir) {
+  const x = -(sunDir[0] || 0), z = -(sunDir[2] || 0);
+  const l = Math.hypot(x, z);
+  return l < 1e-6 ? [0, 0] : [x / l, z / l];
+};
+SH.SHADOW_DIR_DUSK = SHADOW_DIR;   // 旧口径存档：缺省档与判据的对照物
 CITY_BAND.hMax = Math.max(CITY_BAND.hLo[1], CITY_BAND.hHi[1]) * CITY_BAND.hMul;
 CITY_BAND.roof = CITY_BAND.base + CITY_BAND.hMax + CITY_BAND.crown;   // 屋脊 + 塔冠/机房
 /* 横向占位要算上向外挑的部分：楼体半宽最大 12 m（w=8+16 之半），楼脚暗带
@@ -390,6 +403,10 @@ class WorldBuilder {
     this.q = { b0: 0, b1: 0, b2: 0, e: 0 };
     this.ambient = [0.30, 0.33, 0.40];
     this.sun = null;                    // {dir, col} 仅地面段用
+    /* 影向（视觉方案 1.3）：从 cfg.sunDir 推，缺省 = 旧黄昏口径。
+       落地投影（_shadow / 桥面投影带）与太阳在天上的方向同源 ——
+       调用方（game.js 的 bake）传当天真实太阳，判据量两者的夹角。 */
+    this.shadowDir = SH.shadowDirOf(cfg && cfg.sunDir ? cfg.sunDir : SH.ENVS.dusk.sunDir);
     this.cityLots = [];                 // city() 摆出去的楼体 footprint，供"不得互穿"断言
     this.streetItems = [];              // 街具登记（路灯/围墙段/树穴/店招），判据按它核对烘焙结果
     this.farPlatforms = [];             // 对向站台（第二座侧式站台）登记；不进 facilities（那条有 mats 契约）
@@ -3531,14 +3548,15 @@ class WorldBuilder {
    * 黄昏太阳只抬高 6.3°，真实影长是楼高的 9 倍 —— 照实投会把整片地面糊成
    * 黑的。所以按 2.5 倍楼高截断，并沿影长方向铺 N 片同 footprint 的扁块，
    * 颜色从本影一路淡回地面底色，末端自己就消失，看不出被截过。
-   * 方向写死取 `ENVS.dusk.sunDir` 的方位角（见文件头 SHADOW_DIR）：
-   * 户外只跑 dusk 一套环境，烘焙几何与它不会分家。
+   * 方向取 `this.shadowDir`（构造期从 cfg.sunDir 推，视觉方案 1.3）：
+   * 影与天上的太阳同源，缺省 = 旧黄昏口径（SHADOW_DIR），判据钉在两者夹角上。
    * @param tint 被照地面的底色（街面上的楼给沥青色，远景地上给航拍色）
    */
   _shadow(cx, cz, w, d, yaw, h, gy, tint, steps) {
     const N = steps || 4;
     const L = Math.min(2.5 * h, 95), step = L / N;
-    const dx = SHADOW_DIR[0] * step, dz = SHADOW_DIR[1] * step;
+    const SD = this.shadowDir || SHADOW_DIR;
+    const dx = SD[0] * step, dz = SD[1] * step;
     for (let i = 0; i < N; i++) {
       const k = 0.30 * (1 - i / N) * (1 - i / N) + 0.94;     // 本影 0.30 → 几乎回到底色
       this.b.box([cx + dx * (i + 0.5), gy, cz + dz * (i + 0.5)], [w, 0.02, d],
@@ -4430,12 +4448,14 @@ class WorldBuilder {
       /* 高架桥面自己的投影。桥面离街面约 10.9 m，按黄昏太阳投出去 27 m，
          正好落在走廊里 —— 这是驾驶室视角最重要的一条深度线索：
          以前整条高架无影地浮在路上，桥墩像是插在空气里。
-         三段渐淡，末端回到沥青底色，看不出被截断。 */
+         三段渐淡，末端回到沥青底色，看不出被截断。
+         影向读 this.shadowDir（视觉方案 1.3）：换时段重烘后这条带跟着太阳走。 */
       {
         const t = rgbOf('#6d777f'), DL = 27;
+        const SDv = this.shadowDir || SHADOW_DIR;
         for (let i = 0; i < 3; i++) {
           const off = DL * (i + 0.5) / 3;
-          const ox = SHADOW_DIR[0] * off, oz = SHADOW_DIR[1] * off;
+          const ox = SDv[0] * off, oz = SDv[1] * off;
           const dp = gp.map(q => ({ p: [q.p[0] + ox, q.p[1] + 0.16, q.p[2] + oz], r: q.r, u: q.u, f: q.f, s: q.s }));
           const k = 0.34 * (1 - i / 3) * (1 - i / 3) + 0.95;
           this.b.sweep(dp, [{ x: -6.5, y: 0, nx: 0, ny: 1 }, { x: 6.5, y: 0, nx: 0, ny: 1 }],
