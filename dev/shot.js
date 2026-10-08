@@ -407,6 +407,15 @@ async function main() {
     const rq = await call('Runtime.evaluate', { expression: '(()=>{const a=window.__SH; a.r.setQuality(' + qArg + '); if(a.settings) a.settings.quality=' + qArg + '; return a.r.quality + "/" + (a.r.resAuto ? "自动·" : "") + (a.r.resAuto ? a.r._effTier : a.r.resTier) + "(上限 " + a.r.resTier + ")/" + a.r.w + "x" + a.r.h;})()', returnByValue: true });
     console.log('画质摆到 ' + process.env.QUALITY + '（生效 ' + (rq.result && rq.result.value) + '）');
   }
+  /* MSAA=<n>：覆盖多重采样数再截图（Phase A 取证开关）。
+     用途①：MSAA=0 做"架构迁移像素不变"对拍 —— 关掉这一个变量，其余管线与
+     基线逐字节同路，diff 必须为 0；用途②：同机位 0x/4x 各拍一张看边缘。
+     注意必须放在 QUALITY **之后**：setQuality 会按档位重写 r.msaa（4/2/0）。 */
+  if (process.env.MSAA != null && process.env.MSAA !== '') {
+    const mArg = JSON.stringify(parseInt(process.env.MSAA, 10));
+    const rm = await call('Runtime.evaluate', { expression: '(()=>{const a=window.__SH; a.r.msaa=' + mArg + '; return a.r.msaa;})()', returnByValue: true });
+    console.log('MSAA 摆到 ' + (rm.result && rm.result.value) + 'x（下一帧 begin 时生效）');
+  }
   /* ---- PERF 模式：不截图，逐"线路·mid·视角"量帧预算 ----
    * 用法：node dev/shot.js perf l1 0.5 cab [再来一组...]（第一组名固定写 perf）。
    * 页面真实 rAF 跑 60 帧，采样 r.stats.draws/tris 的均值与峰值、

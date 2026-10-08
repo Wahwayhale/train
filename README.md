@@ -1000,6 +1000,15 @@ node runall.js         # 一次跑完上面 18 个脚本，检查 rc **与红字
 - **搬进来之后才发现的一条关键口径（着色器加了"模式 3"）**：模型的贴图是**灰度细节图**，颜色全在 `SetColor` 里 —— 两者**相乘**才是反照率。着色器原来只有两档：模式 1 是 `mix(1.0, tx, 0.85)`（**绕 1.0 的细节调制**，对平均亮度 0.7 的贴图会把整车压成中灰）、模式 2 是整张替换（**把 SetColor 整个丢掉**，列车变成"一片灰白"——第一版就是这个）。现在加了 **模式 3：`base *= tx.rgb`**（真乘），`bve:*` 材质全走它。同时 `emit` 取的颜色必须是子网格**最终**的 `SetColor`，不是"加第一张面时的颜色"（模型的写法是"先 AddFace / Cylinder，最后才 SetColor"）。
 - **两条工程坑**：① 着色器是 **JS 模板串**，注释里不许出现反引号（写了会把模板串截断，症状是"整页 30 秒起不来"，与 `dev/shot.js` 的 PAGE_FN 同一条规矩）；② 异步资源与取证之间必须有闸（见上一条的 `bveReady`）。
 
+**148. Phase A：WebGL2-only 迁移 —— 七个着色器升 ESSL 3.00、删掉 WebGL1 回退、离屏路径原生 4x MSAA、SignAtlas 能力查询（C 轨缺口 D1 落地）。** 2026-10-07 的两项决策（丢弃 WebGL1；WebGPU 双后端并行，交接书 `WebGPU交接书.md`）里 A 轨的这一半。动机的三层：ES 3.00 里屏幕导数是**核心能力**，法线贴图分支的 `GL_OES_standard_derivatives` 守卫（第 147 条同期真机事故的补丁）随升级摘除；GL2 的 MSAA renderbuffer / 深度纹理（阴影用）/ 原生 VAO 全是核心能力，扩展探测与 GL1 回退分支整段删除（覆盖率损失 ~3% 知情接受，GL2 是 WebGPU 后端的永久回退地板）；离屏路径的上下文 `antialias:true` 只管默认帧缓冲，钢轨/接触网细线锯齿一直裸奔 —— 原生 MSAA 直接顶替了视觉方案里的 FXAA 项（方案 1.2 已改判）。
+- **着色器侧**：`#version 300 es` 必须是模板串**第一个字符**（GLSL 规定版本指令前不许有任何字符，包括换行）；attribute→in、varying→in/out、texture2D→texture、gl_FragColor→声明的 `out vec4 oCol`。数学零改动 —— parity 见下面取证。
+- **MSAA**：`_ensureMsaa`/`_destroyMsaa`（MAX_SAMPLES 钳制 —— 软件光栅器报低值时退化为无 MSAA，而不是画进 incomplete FBO）；begin 绑 MSAA FBO；**resolve 的 blitFramebuffer 放在世界计时的 endQuery 之前** —— resolve 是场景像素的真实成本，不进 gpuMs 就是从 DRS 的账本上抹掉。档位映射 high=4x / medium=2x / low=0（low 直渲画布吃上下文 antialias）；`r.msaa` 同时是取证旋钮（`dev/shot.js` 的 `MSAA=0/4`）；HUD 显示 `·MSAA4x`。
+- **能力查询**：`Renderer.maxTexSize()` —— game.js 两处 `SignAtlas.bestSize()` 从递 `.gl` 改成递数字。WebGPU 后端（C 轨）没有 `.gl`，以前只能吃 2048 兜底、站牌图集容量少一半（交接书附录 D1）。C 轨侧给 `device.limits.maxTextureDimension2D` 即可。
+- **判据**：新增第 20 套件 `test-gles.js` —— ①版本头 ×7 ②剥注释后无 ESSL 1.00 语法残留 ③导数守卫已摘且 dFdx 分支在场 ④GL1 痕迹清零（experimental-webgl / OES_* / this.gl2 / this.vaoExt 一族）⑤MSAA 调用面 + resolve 记账顺序 + 档位映射 ⑥bestSize 调用面 ⑦运行时面 ⑧**冻结接口在场**（C 轨交接书 §4 的契约面：upload/dropTag/draw/drawInstanced/begin/end/texFrom*/fade/setQuality/setRes×2/setResEff/resize/boxInFrustum/maxTexSize）。`test-env.js` 的渲染上下文红线**口径翻转**（原来钉"WebGL1 回退必须保留 + VAO 垫片在位"，Phase A 后反着钉）；`test-bake.js` 的图集判据改走数字入参。
+- **负控** ×5（`gles100` 摘版本头 / `gtex2d` 写回 texture2D / `gvaogl1` 接回 GL1 回退 / `gmsaa` 删 resolve / `gbestsize` 退回递 .gl）逐条实跑报红 ✓。**顺手清了两条历史欠账**：`gqnoend`/`texseam` 的 expect 是判据文案改版前的化石（"不成对"/"不可平铺"），对齐到现行文案（"写在后期链早退的"/"纵向不周期"）—— 全量 294 条里现在唯一不红的是 `streettree`（2026-10-05 已定性"机制再也碰不到"，前人明确不为变绿调门槛，维持）。
+- **取证（像素 parity，方法本身值得记）**：`dev/shot.js` 截图链**跨 job/跨进程非确定**（时间累计移颗粒相位；SwiftShader 对 ESSL 1.00/3.00 的 sin 实现有精度差，颗粒会整片解相关）—— diff=0 在这条链上不可达，正确做法是**量噪声地板**：同代码连拍两遍作对照。结果：迁移后（MSAA=0）vs 基线在三视角上与各自噪声地板统计重合（platform max=9 纯颗粒级 / scenic 50 vs 地板 39 / cab 199 vs 地板 195 —— cab 的地板来自 TCMS 表等动态状态）；**MSAA 的效应被干净隔离**：msaa0 vs msaa4 直接互 diff 只动 0.37% 像素、max=98、mean 不变 —— 差异全在边缘，正是 AA 的特征信号。
+- **工程坑（行尾，这次写进 .gitattributes）**：编辑工具把工作区文件写成 CRLF，`dev/negctl.js` 里**含换行的多行锚点**静默失效（单行锚点无恙 —— 失败模式本身把规律暴露了）；且本机 `core.autocrlf=true`，任何 checkout/stash 恢复都会把工作区 smudge 成 CRLF 再杀一次。修复=工作区归一化回 LF + `.gitattributes` 钉死 `eol=lf`。教训的通用形态：**按字节匹配源码文本的判据，对行尾是有感知的 —— 归一化必须是仓库级约定而不是个人习惯**。
+
 
 
 ## 客流与乘降（`src/pax.js`）

@@ -578,9 +578,12 @@ class SignAtlas {
     this.dirty = false;
   }
   /** 图集边长：按 GPU 上限取。全线站牌共用一张图集（烘焙时不得另起一张，
-   *  否则 rect 坐标与真正上传的那张对不上），2048² 装不下 33 站长线路。 */
-  static bestSize(gl) {
-    const max = (gl && gl.getParameter && gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 2048;
+   *  否则 rect 坐标与真正上传的那张对不上），2048² 装不下 33 站长线路。
+   *  Phase A（2026-10-08）起吃**数字**（game.js 从 r.maxTexSize() 拿：
+   *  GL=MAX_TEXTURE_SIZE / WebGPU=maxTextureDimension2D）—— 以前把 GL 上下文
+   *  递进来，WebGPU 后端没有 .gl 只能吃 2048 兜底，图集容量少一半（C 轨缺口 D1）。 */
+  static bestSize(cap) {
+    const max = cap || 2048;
     return Math.max(1024, Math.min(4096, max));
   }
   /**

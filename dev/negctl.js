@@ -453,9 +453,12 @@ if (process.env.NEG === 'limiter') SH.JERK = { up: 20, dn: 20, eb: 20 };`),
     patch: x => x,
   },
   {
-    /* 第 137 条：beginQuery 没有配对的 endQuery —— 通道第一次用完就静默报废。 */
+    /* 第 137 条：beginQuery 没有配对的 endQuery —— 通道第一次用完就静默报废。
+       （2026-10-08 expect 对齐：判据文案早已改成"写在早退的后面"——变异删掉
+       世界 endQuery 后，文件里第一条 endQuery 变成后期链那条（在早退之后），
+       判据报红的正是这句。旧 expect '不成对' 是文案改版前的化石。） */
     name: 'gqnoend', why: '不 endQuery',
-    expect: ['不成对'],
+    expect: ['写在后期链早退的'],
     script: './test-env.js',
     disk: ['./src/renderer.js',
       '    if (this.qExt && this._qOpen) { gl.endQuery(this.qExt.TIME_ELAPSED_EXT); this._qOpen = false; }',
@@ -2400,9 +2403,11 @@ if (process.env.NEG === 'limiter') SH.JERK = { up: 20, dn: 20, eb: 20 };`),
   },
   {
     /* 釉面反光从"周期余弦"换成"从顶到底线性衰减"：平铺处相位对不上，
-       接缝那道落差超过图内任何一条边。判据：test-tex ① 比平铺接缝与图内最大列/行差。 */
+       接缝那道落差超过图内任何一条边。判据：test-tex ① 比平铺接缝与图内最大列/行差。
+       （2026-10-08 expect 对齐：判据文案已改成"纵向不周期…平铺处会裂开"，
+       旧 expect '不可平铺' 是文案改版前的化石。） */
     name: 'texseam', why: '釉面反光退回非周期（平铺处接不上）',
-    expect: ['不可平铺'], script: './test-tex.js',
+    expect: ['纵向不周期'], script: './test-tex.js',
     disk: ['./src/textures.js', "b += (0.5 + 0.5 * Math.cos(sy / TH * Math.PI * 2)) * 0.030;", "b += (j / S) * 0.30;"],
     patch: t => t,
   },
@@ -2413,6 +2418,49 @@ if (process.env.NEG === 'limiter') SH.JERK = { up: 20, dn: 20, eb: 20 };`),
     name: 'bveempty', why: 'BVE 解析器返回空（1 号线列车静默退回程序化车体）',
     expect: ['子网格只有'], script: './test-train.js',
     disk: ['./src/bve.js', 'function parse(text) {', 'function parse(text) { return [];'],
+    patch: t => t,
+  },
+  /* ---- A 轨 Phase A（2026-10-08）：test-gles.js 的五条负控 ----
+     共同点：缺陷全是"静默"的 —— 离线套件不跑真 GL，着色器/后端面的退化
+     在 19 个几何套件里一个像素都看不出来，只有 test-gles 的静态断言钉得住。 */
+  {
+    /* ESSL 3.00 的版本头必须在模板串第一个字符。丢了它 shader 按 1.00 解析，
+       in/out 全是语法错 —— 但 SwiftShader 宽松翻译器未必立刻死给你看。 */
+    name: 'gles100', why: 'SCENE_FS 摘掉 ES 3.00 版本头（着色器按 1.00 解析）',
+    expect: ['版本头'], script: './test-gles.js',
+    disk: ['./src/renderer.js', 'const SCENE_FS = `#version 300 es', 'const SCENE_FS = `'],
+    patch: t => t,
+  },
+  {
+    /* texture2D 在 ESSL 3.00 里是编译错（texture() 取代）—— 残留一处，
+       真机启动即 fatal 覆盖层。 */
+    name: 'gtex2d', why: 'SCENE_FS 的 texture( 写回 ESSL 1.00 的 texture2D(',
+    expect: ['texture2D'], script: './test-gles.js',
+    disk: ['./src/renderer.js', 'tx = texture(uTex, wv);', 'tx = texture2D(uTex, wv);'],
+    patch: t => t,
+  },
+  {
+    /* GL1 回退分支接回来一行 —— 决策（丢弃 WebGL1）被静默推翻。 */
+    name: 'gvaogl1', why: "构造器接回 getContext('webgl',…) 回退（WebGL1 决策被推翻）",
+    expect: ['WebGL1 痕迹残留'], script: './test-gles.js',
+    disk: ['./src/renderer.js', "const gl = canvas.getContext('webgl2', opt);",
+      "const gl = canvas.getContext('webgl2', opt) || canvas.getContext('webgl', opt);"],
+    patch: t => t,
+  },
+  {
+    /* 删掉 resolve：场景渲进 MSAA FBO 却没人把它搬回单采样纹理，
+       后期链读到的是上一帧的残影/空纹理 —— 静默黑屏一族。 */
+    name: 'gmsaa', why: '删掉 end() 里的 blitFramebuffer resolve（后期链读到空纹理）',
+    expect: ['blitFramebuffer'], script: './test-gles.js',
+    disk: ['./src/renderer.js', 'gl.blitFramebuffer(0, 0, this.w, this.h, 0, 0, this.w, this.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);', ''],
+    patch: t => t,
+  },
+  {
+    /* C 轨接口缺口 D1 复发：game.js 再把 .gl 递出去，WebGPU 后端
+       SignAtlas 恒吃 2048 兜底，站牌图集容量少一半走 fallback 色。 */
+    name: 'gbestsize', why: 'game.js 两处调用点退回 bestSize(this.r.gl)（C 轨缺口 D1 复发）',
+    expect: ['bestSize 调用面'], script: './test-gles.js',
+    disk: ['./src/game.js', 'bestSize(this.r.maxTexSize())', 'bestSize(this.r.gl)', 'all'],
     patch: t => t,
   },
 ];

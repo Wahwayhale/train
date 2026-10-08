@@ -47,31 +47,34 @@ function program(gl, vs, fs, name) {
 }
 
 /* ------------------------------------------------------------------ 着色器 */
-const SCENE_VS = `
-attribute vec3 aPos;
-attribute vec3 aNrm;
-attribute vec2 aUv;
-attribute vec4 aCol;      // rgb + 自发光(归一化)
+const SCENE_VS = `#version 300 es
+/* Phase A（2026-10-08）升 ESSL 3.00：attribute→in / varying→out / texture2D→texture。
+   动机：丢弃 WebGL1 后不再需要兼容 1.00 语法；ES 3.00 里屏幕导数是核心能力，
+   SCENE_FS 的法线贴图分支从此不用裹 GL_OES_standard_derivatives 守卫。 */
+in vec3 aPos;
+in vec3 aNrm;
+in vec2 aUv;
+in vec4 aCol;      // rgb + 自发光(归一化)
 /* 实例基（aI0/aI1/aI2 = 基向量的三列，aI3 = 平移），uInst>0.5 时启用。
    普通批次不启用 aI 数组（通用 attrib 值），分支直接跳过 —— 一份 shader
    同时服务"逐实例矩阵"与"实例化"两条通道。
    组合方式是**列向量的线性组合**（p = right*x + up*y + fwd*z + pos），不是点乘：
    写成 dot(aI0.xyz, aPos) 等于把旋转取逆（Rᵀ·p），直线正对镜头时看不出来，
    一到弯道上车就歪着走。判据：node dev/inst-check.js（与逐实例回退做像素 A/B）。 */
-attribute vec4 aI0, aI1, aI2, aI3;
+in vec4 aI0, aI1, aI2, aI3;
 /* 实例色（第 135 条）：rgb = 乘进顶点色的系数，a = 这一批吃不吃色。
    a 由**批次材质**决定（材质表里的 tint）—— 一辆车里"该跟着涂装变的"只有车漆，
-   玻璃、灯、轮胎、深色饰条都不许被染。不实例化时走 uTint（WebGL1 回退逐次 draw）。
+   玻璃、灯、轮胎、深色饰条都不许被染。非实例化的逐次 draw 走 uTint 同一分支。
    两边的 a 默认都是 0：通用属性默认值 (0,0,0,1) 会把车染黑，所以判据是
    "a > 0.5 才乘"，而不是"有值就乘"。 */
-attribute vec4 aIT;
+in vec4 aIT;
 uniform mat4 uM, uVP;
 uniform mat3 uN;
 uniform float uInst;
 uniform vec4 uTint;
-varying vec3 vW, vN;
-varying vec2 vUv;
-varying vec4 vC;
+out vec3 vW, vN;
+out vec2 vUv;
+out vec4 vC;
 void main(){
   vec3 p = aPos, n = aNrm;
   if (uInst > 0.5) {
@@ -88,11 +91,12 @@ void main(){
   gl_Position = uVP * w;
 }`;
 
-const SCENE_FS = `
+const SCENE_FS = `#version 300 es
 precision highp float;
-varying vec3 vW, vN;
-varying vec2 vUv;
-varying vec4 vC;
+in vec3 vW, vN;
+in vec2 vUv;
+in vec4 vC;
+out vec4 oCol;
 uniform sampler2D uTex;
 /* 法线贴图（第二张贴图单元）。uNrm = 起伏强度，0 = 这个材质没有法线图。
    为什么值得单独开一路：这个场景"读起来平"的最大来源不是三角形不够，
@@ -189,16 +193,14 @@ void main(){
      切向与副切向，再投影掉法向分量。代价是每个像素多两张贴图采样 +
      几个导数，收益是**整片场景的浮雕感**。
 
-     ⚠ 2026-10-07 实测：Chrome 154 的 WebGL2 上下文里，ESSL 1.00 着色器根本用不了
-     dFdx/dFdy —— 写 pragma 启用 GL_OES_standard_derivatives 会答
-     "extension is not supported"，不写就是 "no matching overloaded function found"，
-     于是整条 SCENE_FS 编译失败、产品启动即 fatal 覆盖层。SwiftShader（无头截图那条路）
-     的翻译器宽松，所以这条只在真机 GPU 上暴露 —— 之前没人看见。
-     uNrm 今天恒 0（uniform 定位表里没有它），所以这道 #ifdef 不改变任何一个像素；
-     A 轨道把着色器升到 ES 3.00 之后，这层守卫就该拿掉。 */
-#ifdef GL_OES_standard_derivatives
+     （2026-10-07 的教训存档：Chrome 154 的 WebGL2 上下文里 ESSL 1.00 着色器用不了
+     dFdx/dFdy —— 写 pragma 报 "extension is not supported"、不写报
+     "no matching overloaded function found"，整条 SCENE_FS 编译失败、产品启动即
+     fatal 覆盖层，且只有真机 GPU 暴露（SwiftShader 翻译器宽松）。当时的补丁是把
+     分支裹进 #ifdef；2026-10-08 随 ES 3.00 升级摘除 —— 3.00 里导数是核心能力。
+     uNrm 至今恒 0（uniform 定位表里没有它），这条分支依旧零像素参与。） */
   if (uNrm > 0.0) {
-    vec3 tN = texture2D(uTexN, uv).xyz * 2.0 - 1.0;
+    vec3 tN = texture(uTexN, uv).xyz * 2.0 - 1.0;
     vec3 dp1 = dFdx(vW), dp2 = dFdy(vW);
     vec2 du1 = dFdx(uv), du2 = dFdy(uv);
     vec3 T = dp1 * du2.y - dp2 * du1.y;
@@ -207,12 +209,11 @@ void main(){
     B = normalize(B - N * dot(N, B) - T * dot(T, B));
     N = normalize(mat3(T, B, N) * vec3(tN.xy * uNrm, tN.z));
   }
-#endif
   vec4 tx = vec4(1.0);
   if (uMat.x > 0.5) {
     vec2 wv = uv;
     if (uWave > 0.0) wv += vec2(sin(vW.z*0.6+uTime*1.3)*0.012, cos(vW.x*0.8+uTime*0.9)*0.008) * uWave;
-    tx = texture2D(uTex, wv);
+    tx = texture(uTex, wv);
     /* ---- 模式 3：真乘（反照率 = 顶点色 x 贴图）----
        BVE/OpenBVE 列车模型的口径：贴图是灰度细节图，颜色来自每个子网格的
        SetColor，两者相乘才是最终反照率。模式 1 做不到这件事 —— 它是
@@ -282,14 +283,15 @@ void main(){
   vec3 fogC = mix(uFogCol, uFog2, clamp(vW.y * 0.02 + 0.5, 0.0, 1.0));
   vec3 col = mix(lit, fogC, clamp(f, 0.0, 0.96));
 
-  gl_FragColor = vec4(col, uMat.w * (uMat.x > 1.5 ? tx.a : 1.0));
+  oCol = vec4(col, uMat.w * (uMat.x > 1.5 ? tx.a : 1.0));
 }`;
 
 /* 天空穹顶：由视线方向直接算，不需要几何体。
  * 有地平线渐变、日盘与日晕、低空云层、以及夜景的城市天光反射。 */
-const SKY_FS = `
+const SKY_FS = `#version 300 es
 precision highp float;
-varying vec2 vT;
+in vec2 vT;
+out vec4 oCol;
 uniform vec3 uRight, uUp, uFwd, uSunDir, uSunCol, uHorizon, uZenith, uGroundCol, uFogCol, uHaze;
 uniform vec2 uTan;         // tan(fov/2)*aspect, tan(fov/2)
 uniform float uNight, uTime;
@@ -327,38 +329,40 @@ void main(){
   col += uHaze * pow(clamp(1.0-abs(up)*2.2,0.0,1.0), 3.0);
   // 抖动去色带
   col += (h21(vT*1024.0 + uTime) - 0.5) * 0.006;
-  gl_FragColor = vec4(max(col, 0.0), 1.0);
+  oCol = vec4(max(col, 0.0), 1.0);
 }`;
 
 /* 后处理：亮度提取 + 模糊 + 合成 */
-const FS_QUAD_VS = `attribute vec2 aP; varying vec2 vT; void main(){ vT = aP*0.5+0.5; gl_Position=vec4(aP,0.0,1.0); }`;
+const FS_QUAD_VS = `#version 300 es
+in vec2 aP; out vec2 vT; void main(){ vT = aP*0.5+0.5; gl_Position=vec4(aP,0.0,1.0); }`;
 
-const BRIGHT_FS = `
-precision mediump float; varying vec2 vT; uniform sampler2D uSrc; uniform vec2 uTexel; uniform float uThresh;
+const BRIGHT_FS = `#version 300 es
+precision mediump float; in vec2 vT; out vec4 oCol; uniform sampler2D uSrc; uniform vec2 uTexel; uniform float uThresh;
 void main(){
-  vec3 s = texture2D(uSrc, vT).rgb;
+  vec3 s = texture(uSrc, vT).rgb;
   // 4  taps 降采样
-  s += texture2D(uSrc, vT + uTexel*vec2( 1.0, 1.0)).rgb;
-  s += texture2D(uSrc, vT + uTexel*vec2(-1.0, 1.0)).rgb;
-  s += texture2D(uSrc, vT + uTexel*vec2( 1.0,-1.0)).rgb;
+  s += texture(uSrc, vT + uTexel*vec2( 1.0, 1.0)).rgb;
+  s += texture(uSrc, vT + uTexel*vec2(-1.0, 1.0)).rgb;
+  s += texture(uSrc, vT + uTexel*vec2( 1.0,-1.0)).rgb;
   s *= 0.25;
   float l = dot(s, vec3(0.2126,0.7152,0.0722));
-  gl_FragColor = vec4(s * smoothstep(uThresh, uThresh + 0.55, l), 1.0);
+  oCol = vec4(s * smoothstep(uThresh, uThresh + 0.55, l), 1.0);
 }`;
 
-const BLUR_FS = `
-precision mediump float; varying vec2 vT; uniform sampler2D uSrc; uniform vec2 uDir;
+const BLUR_FS = `#version 300 es
+precision mediump float; in vec2 vT; out vec4 oCol; uniform sampler2D uSrc; uniform vec2 uDir;
 void main(){
   vec2 t = uDir;
-  vec3 c = texture2D(uSrc, vT).rgb * 0.2270270;
-  c += (texture2D(uSrc, vT + t*1.3846153).rgb + texture2D(uSrc, vT - t*1.3846153).rgb) * 0.3162162;
-  c += (texture2D(uSrc, vT + t*3.2307692).rgb + texture2D(uSrc, vT - t*3.2307692).rgb) * 0.0702702;
-  gl_FragColor = vec4(c, 1.0);
+  vec3 c = texture(uSrc, vT).rgb * 0.2270270;
+  c += (texture(uSrc, vT + t*1.3846153).rgb + texture(uSrc, vT - t*1.3846153).rgb) * 0.3162162;
+  c += (texture(uSrc, vT + t*3.2307692).rgb + texture(uSrc, vT - t*3.2307692).rgb) * 0.0702702;
+  oCol = vec4(c, 1.0);
 }`;
 
-const COMPOSITE_FS = `
+const COMPOSITE_FS = `#version 300 es
 precision highp float;
-varying vec2 vT;
+in vec2 vT;
+out vec4 oCol;
 uniform sampler2D uSrc, uBloom;
 uniform vec2 uRes;
 uniform float uTime, uBloomAmt, uExposure, uVig, uGrain, uAberr, uFade, uDesat;
@@ -404,9 +408,9 @@ void main(){
   // 色散：越靠边越明显，模拟广角镜头。量级必须很小（UV 的千分之几）
   vec2 off = d * uAberr * r2;
   vec3 col;
-  col.r = texture2D(uSrc, uv + off).r;
-  col.g = texture2D(uSrc, uv).g;
-  col.b = texture2D(uSrc, uv - off).b;
+  col.r = texture(uSrc, uv + off).r;
+  col.g = texture(uSrc, uv).g;
+  col.b = texture(uSrc, uv - off).b;
 
   /* 非整数放大补偿（unsharp）。输出像素预算低于窗口物理像素时，浏览器要把画布
      拉大到屏幕，双线性放大吃掉的就是细线条 —— 远景细楼群、接触网、司机台屏的
@@ -416,12 +420,12 @@ void main(){
      限幅是必要的：不夹的话高对比边缘（隧道灯带、站台白线）会振铃出一圈白边。 */
   if (uSharp > 0.001) {
     vec2 px = 1.0 / uRes;
-    vec3 nb = (texture2D(uSrc, uv + vec2(px.x, 0.0)).rgb + texture2D(uSrc, uv - vec2(px.x, 0.0)).rgb
-             + texture2D(uSrc, uv + vec2(0.0, px.y)).rgb + texture2D(uSrc, uv - vec2(0.0, px.y)).rgb) * 0.25;
+    vec3 nb = (texture(uSrc, uv + vec2(px.x, 0.0)).rgb + texture(uSrc, uv - vec2(px.x, 0.0)).rgb
+             + texture(uSrc, uv + vec2(0.0, px.y)).rgb + texture(uSrc, uv - vec2(0.0, px.y)).rgb) * 0.25;
     col += clamp((col - nb) * uSharp, -0.075, 0.075);
   }
 
-  col += texture2D(uBloom, uv).rgb * uBloomAmt;
+  col += texture(uBloom, uv).rgb * uBloomAmt;
   col *= uExposure;
   /* ACES 是**线性光**的曲线，而场景着色器交出来的是已经按显示量级调好的值
      （SCENE_FS 末尾没有 linear→sRGB 那一步）。把显示参考值直接喂进 ACES，
@@ -467,7 +471,7 @@ void main(){
   float n = fract(sin(dot(uv * uRes + uTime, vec2(12.9898,78.233))) * 43758.5453);
   col += (n - 0.5) * uGrain;
   col *= uFade;
-  gl_FragColor = vec4(col, 1.0);
+  oCol = vec4(col, 1.0);
 }`;
 
 /* ------------------------------------------------------------------ 材质表 */
@@ -766,26 +770,15 @@ class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
     const opt = { antialias: true, alpha: false, powerPreference: 'high-performance', stencil: false, depth: true };
-    /* WebGL2 优先（原生 VAO、原生 uint 索引，ESSL 1.00 shader 原样可跑），
-       取不到再回退 WebGL1 —— 本项目的全部现有管线在这两套上下文里行为一致。
-       vaoExt 在 GL2 下是一个"把原生 VAO 包成 OES 方法名"的垫片：
-       upload/draw/dropTag 里的 createVertexArrayOES 等调用点因此一行不用改。 */
-    let gl = canvas.getContext('webgl2', opt);
-    if (gl) {
-      this.gl2 = true;
-      this.vaoExt = {
-        createVertexArrayOES: () => gl.createVertexArray(),
-        bindVertexArrayOES: v => gl.bindVertexArray(v),
-        deleteVertexArrayOES: v => gl.deleteVertexArray(v),
-      };
-      this.extUint = true;                       // GL2 原生支持 32 位索引
-    } else {
-      gl = canvas.getContext('webgl', opt) || canvas.getContext('experimental-webgl', opt);
-      this.vaoExt = gl ? (gl.getExtension('OES_vertex_array_object') || gl.getExtension('MOZ_OES_vertex_array_object') || gl.getExtension('WEBKIT_OES_vertex_array_object')) : null;
-      this.extUint = gl ? gl.getExtension('OES_element_index_uint') : null;
-    }
-    this.api = gl ? (this.gl2 ? 'WebGL2' : 'WebGL1') : null;
-    if (!gl) { fatal('无法初始化 WebGL', '你的浏览器或显卡驱动未启用 WebGL/WebGL2。\n请尝试：\n· 更换 Chrome / Edge\n· 在设置中开启"使用硬件加速模式"\n· 更新显卡驱动'); throw new Error('no webgl'); }
+    /* WebGL2-only（2026-10-08 决策，Phase A 丢弃 WebGL1）：ESSL 3.00 着色器、
+       原生 VAO / 32 位索引 / instancing、MSAA renderbuffer、（后续阴影用的）
+       深度纹理全部是 GL2 核心能力 —— 扩展探测与 GL1 回退分支整段删除。
+       覆盖率损失约 3%（iOS 15 以下、2017 年前的 Android Chrome），知情接受；
+       WebGPU 后端（C 轨）并行在途，GL2 是它的永久回退地板，不是过渡品。
+       着色器侧的配套改动：全部升 ESSL 3.00（见各 shader 头部注释）。 */
+    const gl = canvas.getContext('webgl2', opt);
+    this.api = 'WebGL2';
+    if (!gl) { fatal('无法初始化 WebGL2', '本项目需要 WebGL2（Chrome/Edge 56+、Safari 15+、Firefox 51+）。\n请尝试：\n· 更换 Chrome / Edge\n· 在设置中开启"使用硬件加速模式"\n· 更新显卡驱动'); throw new Error('no webgl2'); }
     this.gl = gl;
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
@@ -811,6 +804,14 @@ class Renderer {
     this.textures = {};
     this.batches = [];
     this.quality = 'high';
+    /* MSAA 采样数（Phase A：离屏路径的上下文 antialias 不生效 —— 场景渲进 FBO，
+       canvas 那个 antialias:true 只管默认帧缓冲，细线锯齿（钢轨/接触网/栏杆）
+       一直裸奔。现在用 GL2 原生 renderbufferStorageMultisample 补上）。
+       随 quality 映射：high 4x / medium 2x / low 0（low 直渲画布，上下文
+       antialias 兜底）。它同时是**取证旋钮**：dev/shot.js 的 MSAA=0 用来做
+       "架构迁移像素不变"对拍 —— 帧内改它不会立刻重建，_ensureMsaa 在
+       begin() 里按 w/samples 判断。 */
+    this.msaa = 4;
     this.resTier = 'q1080';     // 默认 1080p 预算：满刷屏优先，想要原生清晰度可在设置里拉
     this.resAuto = true;        // 自动档（DRS）默认开：上限仍是玩家选的这一档，
                                 // 所以它只在"这台机器连上限都锁不住"时才会动手，
@@ -823,7 +824,7 @@ class Renderer {
     /* GPU 时间查询：DRS 的第二把尺（见 `SH.DRS.gpuShare`）。只走 WebGL2 那个扩展 ——
        GL1 的 `EXT_disjoint_timer_query` 是 queryObjectEXT/getQueryObjectEXT 另一套 API，
        为它多开一条分支不值；拿不到就是"第二把尺不存在"，策略自动退回旧口径。 */
-    this.qExt = this.gl2 ? (gl.getExtension('EXT_disjoint_timer_query_webgl2') || null) : null;
+    this.qExt = gl.getExtension('EXT_disjoint_timer_query_webgl2') || null;
     this.gpuMs = 0; this._gpuHist = []; this._q = null; this._qOpen = false;
     /* 分 pass（9b② 的后半笔）：世界 pass 的毫秒一直有账（上面那条，begin→end 前半段），
        后期链从来没有 —— "世界贵还是后期贵"之前只能靠三角形数与像素数猜。
@@ -898,7 +899,7 @@ class Renderer {
   /** 把 Builder.finish() 的几何数组变成可绘制批次 */
   upload(meshes, tag) {
     const gl = this.gl, out = [];
-    const vaoExt = this.vaoExt, u = this.u;
+    const u = this.u;
     for (const m of meshes) {
       const mk = (target, data, type) => { const b = gl.createBuffer(); gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW); return b; };
       const col = new Uint8Array(m.verts * 4);
@@ -925,16 +926,14 @@ class Renderer {
         count: m.count, type: gl.UNSIGNED_SHORT,
         bbox: isFinite(minX) ? { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] } : null,
       };
-      if (vaoExt && u) {
-        b.vao = vaoExt.createVertexArrayOES();
-        vaoExt.bindVertexArrayOES(b.vao);
-        gl.bindBuffer(gl.ARRAY_BUFFER, b.pb); gl.enableVertexAttribArray(u.aP); gl.vertexAttribPointer(u.aP, 3, gl.FLOAT, false, 0, 0);
-        gl.bindBuffer(gl.ARRAY_BUFFER, b.nb); gl.enableVertexAttribArray(u.aN); gl.vertexAttribPointer(u.aN, 3, gl.FLOAT, false, 0, 0);
-        gl.bindBuffer(gl.ARRAY_BUFFER, b.ub); gl.enableVertexAttribArray(u.aU); gl.vertexAttribPointer(u.aU, 2, gl.FLOAT, false, 0, 0);
-        gl.bindBuffer(gl.ARRAY_BUFFER, b.cb); gl.enableVertexAttribArray(u.aC); gl.vertexAttribPointer(u.aC, 4, gl.UNSIGNED_BYTE, true, 0, 0);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.ib);
-        vaoExt.bindVertexArrayOES(null);
-      }
+      b.vao = gl.createVertexArray();
+      gl.bindVertexArray(b.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b.pb); gl.enableVertexAttribArray(u.aP); gl.vertexAttribPointer(u.aP, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b.nb); gl.enableVertexAttribArray(u.aN); gl.vertexAttribPointer(u.aN, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b.ub); gl.enableVertexAttribArray(u.aU); gl.vertexAttribPointer(u.aU, 2, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, b.cb); gl.enableVertexAttribArray(u.aC); gl.vertexAttribPointer(u.aC, 4, gl.UNSIGNED_BYTE, true, 0, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, b.ib);
+      gl.bindVertexArray(null);
       out.push(b);
     }
     (this.batches = this.batches || []).push(...out);
@@ -947,19 +946,12 @@ class Renderer {
    *  `tints`（第 135 条，可省）= 3n 的扁平 rgb：同一份几何按实例染色，
    *       于是"涂装"不再需要一份几何 —— 变体表从 (车型 × 涂装) 塌回车型。
    *       只有材质标了 `tint` 的批次会乘它（`b.tint`），其余批次 a 给 0。
-   *  GL1 回退：逐实例走普通 draw，颜色经 `uTint` 送进同一分支（行为一致，只是没有省）。
+   *  GL1 的逐实例回退已随 Phase A（2026-10-08）删除；uTint 通道保留，非实例化的 draw() 仍走它。
    *  注意：实例化期间 uM 必须是单位阵（顶点里已经变换到世界系）。 */
   drawInstanced(b, mats, ov, tints) {
     const gl = this.gl, u = this.u;
     const n = mats.length;
     if (!n) return;
-    if (!this.gl2 || !u.inst) {
-      for (let i = 0; i < n; i++) {
-        const o = tints && b.tint ? { tint: [tints[i * 3], tints[i * 3 + 1], tints[i * 3 + 2]] } : ov;
-        this.draw(b, mats[i], o);
-      }
-      return;
-    }
     if (!this.instBuf) { this.instBuf = gl.createBuffer(); this._instCap = 0; }
     const STR = 20;                       // 16 矩阵 + 4 颜色（vec4）
     const data = new Float32Array(n * STR);
@@ -975,7 +967,7 @@ class Renderer {
       data[off + 19] = tints && b.tint ? 1 : 0;
     }
     if (this._instCap < n * STR) { gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuf); gl.bufferData(gl.ARRAY_BUFFER, n * STR * 4, gl.DYNAMIC_DRAW); this._instCap = n * STR; }
-    this.vaoExt.bindVertexArrayOES(null);
+    gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuf);
     if (data.length < this._instCap) gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
     else gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
@@ -1010,10 +1002,10 @@ class Renderer {
 
   /** 删除某个 tag 的全部批次（重建世界时用） */
   dropTag(tag) {
-    const gl = this.gl, vaoExt = this.vaoExt;
+    const gl = this.gl;
     this.batches = this.batches.filter(b => {
       if (b.tag !== tag) return true;
-      if (b.vao && vaoExt) vaoExt.deleteVertexArrayOES(b.vao);
+      if (b.vao) gl.deleteVertexArray(b.vao);
       gl.deleteBuffer(b.pb); gl.deleteBuffer(b.nb); gl.deleteBuffer(b.ub); gl.deleteBuffer(b.cb); gl.deleteBuffer(b.ib);
       return false;
     });
@@ -1041,8 +1033,13 @@ class Renderer {
     this.w = w; this.h = h; this.dpr = dpr; this.aspect = w / h;
     if (this.sceneFbo) { this._destroyFbo(this.sceneFbo); this.sceneFbo = null; }
     if (this.bloomA) { this._destroyFbo(this.bloomA); this._destroyFbo(this.bloomB); this.bloomA = this.bloomB = null; }
+    this._destroyMsaa();
   }
-  setQuality(q) { this.quality = q; this.resize(); }
+  setQuality(q) {
+    this.quality = q;
+    this.msaa = q === 'high' ? 4 : q === 'medium' ? 2 : 0;
+    this.resize();
+  }
   /** 输出像素预算档位：只改分辨率，不碰特效链 */
   /* 玩家改上限 = 生效档也从这一档重新开始找（自动档只会往下让，不会偷偷更贵）。 */
   setRes(t) { if (SH.RES_TIERS[t] == null) t = 'q1080'; this.resTier = t; this._effTier = t; this.resize(); }
@@ -1081,6 +1078,46 @@ class Renderer {
     return { fb, tex, rb, w, h };
   }
   _destroyFbo(o) { if (!o) return; const gl = this.gl; gl.deleteTexture(o.tex); gl.deleteFramebuffer(o.fb); gl.deleteRenderbuffer(o.rb); }
+
+  /** MSAA 目标（Phase A）：多重采样的颜色 + 深度 renderbuffer 挂一个 FBO。
+   *  resolve 在 end() 里 blitFramebuffer → sceneFbo.tex（后期链读的就是那张）。
+   *  样本数先被 MAX_SAMPLES 钳制 —— 个别软件光栅器报低值时自动退化为无 MSAA，
+   *  而不是把整帧画进一个 incomplete 的 FBO 里（那种失败 GPU 一声不吭）。 */
+  _ensureMsaa() {
+    const gl = this.gl;
+    const want = (this.msaa || 0) > 0 ? Math.min(this.msaa, gl.getParameter(gl.MAX_SAMPLES)) : 0;
+    if (want <= 0) { this._destroyMsaa(); return; }
+    if (this.msaaFbo && this.msaaFbo.w === this.w && this.msaaFbo.samples === want) return;
+    this._destroyMsaa();
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    const rbColor = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, rbColor);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, want, gl.RGBA8, this.w, this.h);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rbColor);
+    const rbDepth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, rbDepth);
+    gl.renderbufferStorageMultisample(gl.RENDERBUFFER, want, gl.DEPTH_COMPONENT16, this.w, this.h);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, rbDepth);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.msaaFbo = { fb, rbColor, rbDepth, w: this.w, h: this.h, samples: want };
+  }
+  _destroyMsaa() {
+    if (!this.msaaFbo) return;
+    const gl = this.gl;
+    gl.deleteFramebuffer(this.msaaFbo.fb);
+    gl.deleteRenderbuffer(this.msaaFbo.rbColor);
+    gl.deleteRenderbuffer(this.msaaFbo.rbDepth);
+    this.msaaFbo = null;
+  }
+
+  /** 本后端能吃的最大纹理边长。C 轨接口缺口 D1 的落点：SignAtlas 的图集容量
+   *  按它定，调用方（game.js）不许再把 .gl 递出去 —— WebGPU 后端没有 .gl，
+   *  那边返回 device.limits.maxTextureDimension2D。进程内不变，取一次缓存。 */
+  maxTexSize() {
+    if (this._maxTex == null) this._maxTex = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) || 2048;
+    return this._maxTex;
+  }
 
   boxInFrustum(min, max, margin) {
     if (!this.frustumPlanes) return true;
@@ -1148,7 +1185,7 @@ class Renderer {
       const q = gl.createQuery();
       if (q) { this._q = q; gl.beginQuery(this.qExt.TIME_ELAPSED_EXT, q); this._qOpen = true; }
     }
-    if (this.vaoExt) this.vaoExt.bindVertexArrayOES(null);
+    gl.bindVertexArray(null);
     this._curM = null;
     this._curTex = null;
     this._curBlend = false;
@@ -1165,7 +1202,8 @@ class Renderer {
       if (!this.sceneFbo || this.sceneFbo.w !== this.w) { this._destroyFbo(this.sceneFbo); this.sceneFbo = this._makeFbo(this.w, this.h); }
       const bw = Math.max(1, this.w >> 2), bh = Math.max(1, this.h >> 2);
       if (!this.bloomA || this.bloomA.w !== bw) { this._destroyFbo(this.bloomA); this._destroyFbo(this.bloomB); this.bloomA = this._makeFbo(bw, bh); this.bloomB = this._makeFbo(bw, bh); }
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFbo.fb);
+      this._ensureMsaa();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.msaaFbo ? this.msaaFbo.fb : this.sceneFbo.fb);
     } else {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
@@ -1175,10 +1213,6 @@ class Renderer {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     this._drawSky(cam, env);
     gl.useProgram(this.prog);
-    if (!this.vaoExt) {
-      gl.enableVertexAttribArray(this.u.aP); gl.enableVertexAttribArray(this.u.aN);
-      gl.enableVertexAttribArray(this.u.aU); gl.enableVertexAttribArray(this.u.aC);
-    }
     gl.uniformMatrix4fv(this.u.VP, false, this.vp);
     gl.uniform3fv(this.u.eye, new Float32Array(cam.eye));
     gl.uniform3fv(this.u.sunDir, new Float32Array(env.sunDir));
@@ -1244,13 +1278,13 @@ class Renderer {
   draw(b, M, ov) {
     const gl = this.gl, u = this.u, m = MATERIALS[b.mat] || MATERIALS.concrete;
     ov = ov || {};
-    /* 非实例化通道的按批次染色（WebGL1 回退与"逐辆画"的那几条路径走这里）。
+    /* 非实例化通道的按批次染色（"逐辆画"的那几条路径走这里）。
        `a` 为 0 时 shader 整条分支跳过 —— 每一批都必须显式写，
        漏写等于让上一批的颜色留在这批上。 */
     gl.uniform4f(u.tint, ov.tint ? ov.tint[0] : 1, ov.tint ? ov.tint[1] : 1,
       ov.tint ? ov.tint[2] : 1, ov.tint && b.tint ? 1 : 0);
-    if (this.vaoExt && b.vao) {
-      this.vaoExt.bindVertexArrayOES(b.vao);
+    if (b.vao) {
+      gl.bindVertexArray(b.vao);
     } else {
       gl.bindBuffer(gl.ARRAY_BUFFER, b.pb); gl.vertexAttribPointer(u.aP, 3, gl.FLOAT, false, 0, 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, b.nb); gl.vertexAttribPointer(u.aN, 3, gl.FLOAT, false, 0, 0);
@@ -1318,11 +1352,20 @@ class Renderer {
 
   end(post) {
     const gl = this.gl;
-    if (this.vaoExt) this.vaoExt.bindVertexArrayOES(null);
+    gl.bindVertexArray(null);
     const uu = this.u || {};
     for (const k of [uu.aN, uu.aU, uu.aC]) if (k > 0) gl.disableVertexAttribArray(k);
     gl.depthMask(true); gl.disable(gl.BLEND);
     this._curBlend = false; this._curBlendFunc = -1; this._curDepthMask = true; this._curTex = null; this._curM = null;
+    /* MSAA resolve：把多重采样场景 blit 进单采样纹理（后期链读的就是这张）。
+       放在世界计时的 endQuery **之前** —— resolve 是场景像素的真实成本，
+       不算进 gpuMs 就等于把它从 DRS 的账本上抹掉了。只搬 COLOR：深度在
+       resolve 之后没有任何读者。 */
+    if (this.msaaFbo && this.sceneFbo) {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.msaaFbo.fb);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this.sceneFbo.fb);
+      gl.blitFramebuffer(0, 0, this.w, this.h, 0, 0, this.w, this.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    }
     /* 帧的 GPU 工作到这里全部提交完了（后期链在 end() 的后半段，也在同一帧里）。
        必须在 post 的早退**之前**收尾：`quality==='low'` 那条 return 会跳过 endQuery，
        下一次 beginQuery 就 INVALID_OPERATION —— 判"什么时候该降档"的那把尺从此报废。 */

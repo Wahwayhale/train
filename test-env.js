@@ -341,18 +341,23 @@ console.log('\n—— G. 实例化通道（AI 车中段车：省的是 draw，�
   else console.log('  ✓ 实例化：三条绘制路径（关门/开门/对向）与逐车通道逐矩阵一致，实例数覆盖全部中间车，draw 真的少了，缺 drawInstanced 时仍画满整列车');
 }
 
-/* 渲染上下文红线：WebGL2 必须是第一优先（原生 VAO/uint 索引），WebGL1 回退   必须保留（老设备兼容），且 GL2 路径要有"原生 VAO 包 OES 方法名"的垫片 ——
-   缺一条，upload/draw/dropTag 的五处 VAO 调用点就会有一处静默失效。 */
+/* 渲染上下文红线（Phase A 2026-10-08 改口径）：**WebGL2-only** —— WebGL1 回退
+   与"原生 VAO 包 OES 方法名"的垫片已按决策删除（覆盖率损失 ~3% 知情接受；
+   WebGL2 是 WebGPU 后端的永久回退地板）。判据反着钉：回退入口不许再出现、
+   VAO 走原生、api 恒 WebGL2。VAO 调用点（upload/draw/dropTag/drawInstanced/begin/end）
+   由 test-gles 的冻结接口面兜底。 */
 {
   const rs = require('fs').readFileSync('src/renderer.js', 'utf8');
-  const i2 = rs.indexOf("getContext('webgl2'"), i1 = rs.indexOf("getContext('webgl'");
-  if (i2 < 0) { console.log('✗ renderer.js 没有请求 WebGL2 上下文'); bad++; }
-  else if (i1 >= 0 && i1 < i2) { console.log('✗ renderer.js 的 WebGL1 回退排在 WebGL2 之前'); bad++; }
-  if (rs.indexOf('createVertexArrayOES: () => gl.createVertexArray()') < 0)
-    { console.log('✗ WebGL2 路径缺少原生 VAO → OES 方法名垫片'); bad++; }
-  if (rs.indexOf("this.api = gl ? (this.gl2 ? 'WebGL2' : 'WebGL1')") < 0)
-    { console.log('✗ 渲染器没有暴露 api 标识（HUD 无法显示当前上下文）'); bad++; }
-  if (i2 >= 0 && (i1 < 0 || i1 > i2)) console.log('  ✓ 渲染上下文：WebGL2 优先 + WebGL1 回退 + VAO 垫片在位');
+  const errs = [];
+  if (rs.indexOf("getContext('webgl2'") < 0) errs.push('renderer.js 没有请求 WebGL2 上下文');
+  if (rs.indexOf("getContext('webgl'") >= 0 || rs.indexOf('experimental-webgl') >= 0)
+    errs.push('WebGL1 回退入口又回来了（Phase A 已决策丢弃，回退必须整段不存在）');
+  if (rs.indexOf('gl.createVertexArray()') < 0)
+    errs.push('原生 VAO 调用缺失（垫片已删，upload/draw/dropTag 应直接走 createVertexArray）');
+  if (rs.indexOf("this.api = 'WebGL2'") < 0)
+    errs.push('渲染器没有暴露 api 标识（HUD 无法显示当前上下文）');
+  if (errs.length) { bad += errs.length; console.log('  ✗ ' + errs.join('\n  ✗ ')); }
+  else console.log('  ✓ 渲染上下文：WebGL2-only（GL1 回退已按 Phase A 决策删除）· 原生 VAO · api 标识在位');
 }
 /* 实例化通道的三条源码红线。为什么是 lint 而不是纯数值：这三处都在 GL 调用与
    shader 里，**离线没有 GL 上下文**，能量的只有"这一轮的修复还在不在"；

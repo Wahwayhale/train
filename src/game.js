@@ -1788,7 +1788,7 @@ class App {
     this.resetDrs();
     this.wiperT = 0;          // 雨刮相位：只在雨天推进
     this.trainView = new TrainView(this.r);
-    this.sign = new SH.textures.SignAtlas(SH.textures.SignAtlas.bestSize(this.r.gl));
+    this.sign = new SH.textures.SignAtlas(SH.textures.SignAtlas.bestSize(this.r.maxTexSize()));
     this.world.sign = this.sign;
     this._globalSigns();
     this._makeCab();
@@ -2228,7 +2228,7 @@ class App {
     this.lineId = id; this.line = this.lines[this.lineKey(id)];
     this.startIdx = C(this.startIdx, 0, this.line.stations.length - 2);
     document.documentElement.style.setProperty('--line', this.line.color);
-    this.sign = new SH.textures.SignAtlas(SH.textures.SignAtlas.bestSize(this.r.gl));
+    this.sign = new SH.textures.SignAtlas(SH.textures.SignAtlas.bestSize(this.r.maxTexSize()));
     this.world.sign = this.sign; this._globalSigns();
     if (SH.WorldBuilder.prewarmSigns) SH.WorldBuilder.prewarmSigns(this.sign, this.line);
     this.drawCab(true);
@@ -2661,7 +2661,7 @@ class App {
             + (this.r.gpuPostMs > 0 ? '+后期 ' + this.r.gpuPostMs.toFixed(1) : '')
             + (this._drs && this._drs.cpu >= SH.DRS.lowS ? '·瓶颈不在分辨率' : '') : '')
           + ' · '
-          + (this.r.api || '?') + ' · ' + BUILD_STAMP;
+          + (this.r.api || '?') + (this.r.msaa > 0 ? '·MSAA' + this.r.msaa : '') + ' · ' + BUILD_STAMP;
       }
       /* 自适应分辨率：就吃上面这两个中位，**不另起计时器**（HUD 与 DRS 必须看同一份
          帧历史，否则会出现"HUD 说 60fps 而 DRS 在降档"这种谁也说不清的场面）。

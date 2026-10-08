@@ -729,7 +729,9 @@ console.log(`  站厅侧设施判据覆盖 ${facStations} 个站（地下 + 露�
   const missing = need.filter(k => !size[k]);
   if (missing.length) { fails++; console.log('✗ 站牌尺寸未能从源码解析：' + missing.join(',') + '（改写法了？判据要一起改）'); }
   else {
-    const S = SH.textures.SignAtlas.bestSize({ getParameter: () => 4096, MAX_TEXTURE_SIZE: 1 });
+    /* Phase A（2026-10-08）起 bestSize 吃**数字**（game.js 从 r.maxTexSize() 拿；
+       4096 = 真机 GL2 上限的量级。旧的 gl 桩对象入参已随 C 轨缺口 D1 的修法废除）。 */
+    const S = SH.textures.SignAtlas.bestSize(4096);
     let worst = null;
     for (const id of Object.keys(SH.LINES)) {
       const L = SH.LINES[id];

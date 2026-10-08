@@ -42,6 +42,7 @@ const SUITE = [
   ['test-train.js', '列车车窗/贯通道'],
   ['test-scene.js', '街区类型学'],
   ['test-tex.js', '贴图质量'],
+  ['test-gles.js', '着色器/后端'],
 ];
 const only = process.argv.slice(2);
 let bad = 0, t0 = Date.now();

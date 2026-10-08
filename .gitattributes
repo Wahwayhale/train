@@ -1,0 +1,7 @@
+# 行尾纪律（2026-10-08 Phase A 事故存档）：
+# dev/negctl.js 的 disk 变异锚点按**工作区文件的真实字节**做 includes/split 匹配，
+# 含换行的多行锚点在 CRLF 文件上永远找不到（单行锚点无恙——这个差异本身
+# 就是当年定位的线索）。本机 git core.autocrlf=true：任何 checkout/stash 恢复
+# 都会把工作区 smudge 成 CRLF，负控锚点随之静默失效。
+# 统一钉死 eol=lf：文本文件一律 LF 入库、LF 出库，多行锚点永续有效。
+* text=auto eol=lf
